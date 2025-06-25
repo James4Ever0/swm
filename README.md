@@ -1,5 +1,7 @@
 SWM: scrcpy window manager
 
+[logo](./logo/hunyuan_logo_2.jpeg)
+
 distribute it as a python package, or compile it using nuitka
 
 install:
