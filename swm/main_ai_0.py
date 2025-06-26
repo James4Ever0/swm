@@ -4,16 +4,20 @@ Usage:
   swm [options] adb [<adb_args>...]
   swm [options] scrcpy [<scrcpy_args>...]
   swm [options] app run <app_name> [<app_args>...]
-  swm [options] app list [--search] [--most-used <limit>]
+  swm [options] app list
+  swm [options] app most-used [count]
+  swm [options] app search
   swm [options] app config <app_name> (show|edit)
-  swm [options] session list [--search]
+  swm [options] session list
+  swm [options] session search
   swm [options] session restore [session_name]
   swm [options] session save <session_name>
   swm [options] session delete <session_name>
-  swm [options] device list [--search]
+  swm [options] device list
+  swm [options] device search
   swm [options] device select <device_id>
   swm [options] device name <device_id> <device_alias>
-  swm [options] baseconfig show [--diagnostic]
+  swm [options] baseconfig show [diagnostic]
   swm [options] baseconfig edit
   swm --version
   swm --help
@@ -170,6 +174,43 @@ class SWM:
     
     def get_device_architecture(self) -> str:
         return self.adb_wrapper.get_device_architecture()
+
+    def infer_current_device(self, default_device:str):
+        all_devices = self.adb_wrapper.list_devices()
+        if len(all_devices) == 0:
+            # no devices.
+            print("No device is online")
+            return
+        elif len(all_devices) == 1:
+            # only one device.
+            device = all_devices[0]
+            if device != default_device:
+                print(
+                    "Device selected by config (%s) is not online, using the only device online (%s)"
+                    % (default_device, device)
+                )
+            return device
+        else:
+            print("Multiple device online")
+            if default_device in all_devices:
+                print("Using selected device:", default_device)
+                return default_device
+            else:
+                print(
+                    "Device selected by config (%s) is not online, please select one."
+                    % default_device
+                )
+                prompt_for_device = f"Select a device from {all_devices}: "
+                # TODO: input numbers or else
+                # TODO: show detailed info per device, such as device type, last swm use time, alias, device model, android info, etc...
+                while True:
+                    selected_device = input(prompt_for_device)
+                    if selected_device in all_devices:
+                        print("Selecting device:", selected_device)
+                        return selected_device
+                    else:
+                        print("Invalid device selected, please try again.")
+
 
 class AppManager:
     def __init__(self, swm: SWM):
@@ -350,6 +391,9 @@ class AdbWrapper:
             return result.stdout.strip()
         return None
     
+    def get_android_version(self) -> str:
+        return self.execute(["shell", "getprop", "ro.build.version.release"], capture=True)
+    
     def get_device_architecture(self) -> str:
         return self.execute(["shell", "getprop", "ro.product.cpu.abi"], capture=True)
     
@@ -487,7 +531,7 @@ def override_system_excepthook(program_specific_params: Dict):
     sys.excepthook = custom_excepthook
 
 def parse_args():
-    return docopt(__doc__, version=f"SWM {__version__}",  options_first=True)
+    return docopt(__doc__, version=f"SWM {__version__}", options_first=True)
 
 def main():
     # Setup cache directory
@@ -498,24 +542,22 @@ def main():
     # Load or create config
     config = load_or_create_config(SWM_CACHE_DIR)
     
+    # Parse CLI arguments
+    args = parse_args()
+
     # Prepare diagnostic info
     program_specific_params = {
         "cache_dir": SWM_CACHE_DIR,
         "config": omegaconf.OmegaConf.to_container(config),
         "argv": sys.argv,
-        "executable": sys.executable
+        "parsed_args": args,
+        "executable": sys.executable,
+        "config_overriden_parameters":{}
     }
     override_system_excepthook(program_specific_params)
-    
-    # Parse CLI arguments
-    args = parse_args()
-    
+
     # Initialize SWM core
     swm = SWM(config)
-    
-    # Handle device selection
-    if args["--device"]:
-        swm.set_current_device(args["--device"])
     
     # # Command routing
     # try:
@@ -525,40 +567,16 @@ def main():
     elif args["scrcpy"]:
         execute_subprogram(swm.scrcpy, args["<scrcpy_args>"])
     
-    elif args["app"]:
-        if args["list"]:
-            apps = swm.app_manager.list(
-                search=args["--search"],
-                most_used=int(args["--most-used"]) if args["--most-used"] else None
-            )
-            print("\n".join(apps))
+    elif args["baseconfig"]:
+        if args["show"]:
+            if args["diagnostic"]:
+                print_diagnostic_info(program_specific_params)
+            else:
+                print(omegaconf.OmegaConf.to_yaml(config))
         
-        elif args["run"]:
-            swm.app_manager.run(args["<app_name>"], args["<app_args>"])
-        
-        elif args["config"]:
-            app_name = args["<app_name>"]
-            if args["show"]:
-                config = swm.app_manager.get_app_config(app_name)
-                print(pretty_print_json(config))
-            elif args["edit"]:
-                # Implementation would open editor
-                print(f"Editing config for {app_name}")
-    
-    elif args["session"]:
-        if args["list"]:
-            sessions = swm.session_manager.list(search=args["--search"])
-            print("\n".join(sessions))
-        
-        elif args["save"]:
-            swm.session_manager.save(args["<session_name>"])
-        
-        elif args["restore"]:
-            session_name = args.get("<session_name>", "default")
-            swm.session_manager.restore(session_name)
-        
-        elif args["delete"]:
-            swm.session_manager.delete(args["<session_name>"])
+        elif args["edit"]:
+            # Implementation would open editor
+            print("Opening config editor")
     
     elif args["device"]:
         if args["list"]:
@@ -574,20 +592,64 @@ def main():
                 args["<device_alias>"]
             )
     
-    elif args["baseconfig"]:
-        if args["show"]:
-            if args["--diagnostic"]:
-                print_diagnostic_info(program_specific_params)
-            else:
-                print(omegaconf.OmegaConf.to_yaml(config))
-        
-        elif args["edit"]:
-            # Implementation would open editor
-            print("Opening config editor")
-    
     elif args["--version"]:
         print(f"SWM version {__version__}")
+    else:
+        # Device specific branches
 
+        # Handle device selection
+        cli_device = args["--device"]
+        config_device = config.device
+
+        if cli_device is not None:
+            default_device = cli_device
+        else:
+            default_device = config_device
+
+        current_device = swm.infer_current_device(default_device)
+
+        if current_device is not None:
+            swm.set_current_device(current_device)
+        else:
+            raise ValueError("No available device")
+        
+        if args["app"]:
+            if args["list"]:
+                apps = swm.app_manager.list(
+                    search=args["--search"],
+                    most_used=int(args["--most-used"]) if args["--most-used"] else None
+                )
+                print("\n".join(apps))
+            
+            elif args["run"]:
+                swm.app_manager.run(args["<app_name>"], args["<app_args>"])
+            
+            elif args["config"]:
+                app_name = args["<app_name>"]
+                if args["show"]:
+                    config = swm.app_manager.get_app_config(app_name)
+                    print(pretty_print_json(config))
+                elif args["edit"]:
+                    # Implementation would open editor
+                    print(f"Editing config for {app_name}")
+        
+        elif args["session"]:
+            if args["list"]:
+                sessions = swm.session_manager.list(search=args["--search"])
+                print("\n".join(sessions))
+            
+            elif args["save"]:
+                swm.session_manager.save(args["<session_name>"])
+            
+            elif args["restore"]:
+                session_name = args.get("<session_name>", "default")
+                swm.session_manager.restore(session_name)
+            
+            elif args["delete"]:
+                swm.session_manager.delete(args["<session_name>"])
+            else:
+                ... # Implement other device specific commands
+        
     # except Exception as e:
     #     print(f"Error: {e}")
     #     if args["--verbose"]:
