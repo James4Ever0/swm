@@ -4,17 +4,13 @@ Usage:
   swm [options] adb [<adb_args>...]
   swm [options] scrcpy [<scrcpy_args>...]
   swm [options] app run <app_name> [<scrcpy_args>...]
-  swm [options] app list
+  swm [options] app (list|search)
   swm [options] app most-used [count]
-  swm [options] app search
   swm [options] app config <app_name> (show|edit)
-  swm [options] session list
-  swm [options] session search
+  swm [options] session (list|search)
   swm [options] session restore [session_name]
-  swm [options] session save <session_name>
-  swm [options] session delete <session_name>
-  swm [options] device list
-  swm [options] device search
+  swm [options] session (save|delete) <session_name>
+  swm [options] device (list|search)
   swm [options] device select <device_id>
   swm [options] device name <device_id> <device_alias>
   swm [options] baseconfig show [diagnostic]
@@ -328,7 +324,7 @@ class AppManager:
 
         if scrcpy_args is None:
             scrcpy_args = app_config.get("scrcpy_args", None)
-            
+
         # Execute scrcpy
         self.swm.scrcpy_wrapper.launch_app(
             app_name, window_params=win, scrcpy_args=scrcpy_args
