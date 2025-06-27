@@ -4,8 +4,9 @@ Usage:
   swm [options] adb [<adb_args>...]
   swm [options] scrcpy [<scrcpy_args>...]
   swm [options] app run <app_name> [<scrcpy_args>...]
-  swm [options] app (list|search)
-  swm [options] app most-used [count]
+  swm [options] app list [last_used] [type]
+  swm [options] app search [type]
+  swm [options] app most-used [<count>]
   swm [options] app config <app_name> (show|edit)
   swm [options] session (list|search)
   swm [options] session restore [session_name]
@@ -25,7 +26,8 @@ Options:
                 Use a config file.
   -v --verbose  Enable verbose logging.
   -d --device=<device_selected>
-                Device name or ID for executing the command
+                Device name or ID for executing the command.
+  --debug       Debug mode, capturing all exceptions.
 """
 
 import json
@@ -40,7 +42,9 @@ import traceback
 import zipfile
 from datetime import datetime
 from typing import Dict, List, Optional
+import functools
 
+import pandas
 import omegaconf
 import requests
 import yaml
@@ -49,12 +53,10 @@ from tinydb import Query, Storage, TinyDB
 
 __version__ = "0.1.0"
 
-# TODO: set window title as "scrcpy - <device_name> - <app_name>"
-# --window-title=<title>
-
 # TODO: override icon with SCRCPY_ICON_PATH=<app_icon_path>
 
-# TODO: use "scrcpy --list-apps" instead of using aapt to parse app labels
+
+class NoDeviceError(ValueError): ...
 
 
 def reverse_text(text):
@@ -251,13 +253,23 @@ def download_binary_into_cache_dir_and_return_path(
 
 
 class ADBStorage(Storage):
-    def __init__(self, filename, adb_wrapper: "AdbWrapper"):  # (1)
+    def __init__(self, filename, adb_wrapper: "AdbWrapper", enable_read_cache=True):
         self.filename = filename
         self.adb_wrapper = adb_wrapper
+        adb_wrapper.create_file_if_not_exists(self.filename)
+        self.enable_read_cache = enable_read_cache
+        self.read_cache = None
 
     def read(self):
         try:
-            content = self.adb_wrapper.read_file(self.filename)
+            if self.enable_read_cache:
+                if self.read_cache is None:
+                    content = self.adb_wrapper.read_file(self.filename)
+                    self.read_cache = content
+                else:
+                    content = self.read_cache
+            else:
+                content = self.adb_wrapper.read_file(self.filename)
             data = json.loads(content)
             return data
         except json.JSONDecodeError:
@@ -266,6 +278,8 @@ class ADBStorage(Storage):
     def write(self, data):
         content = json.dumps(data)
         self.adb_wrapper.write_file(self.filename, content)
+        if self.enable_read_cache:
+            self.read_cache = content
 
     def close(self):
         pass
@@ -274,7 +288,7 @@ class ADBStorage(Storage):
 class SWMOnDeviceDatabase:
     def __init__(self, db_path: str, adb_wrapper: "AdbWrapper"):
         self.db_path = db_path
-        self.storage = ADBStorage(db_path, adb_wrapper)
+        self.storage = functools.partial(ADBStorage, adb_wrapper=adb_wrapper)
         self._db = TinyDB(db_path, storage=self.storage)
 
     def write_app_last_used_time(
@@ -322,12 +336,18 @@ class SWM:
         self.fzf_wrapper = FzfWrapper(self.fzf)
 
         # Device management
-        self.current_device = self.config.get("device")
+        self.current_device = None
 
         # Initialize managers
         self.app_manager = AppManager(self)
         self.session_manager = SessionManager(self)
         self.device_manager = DeviceManager(self)
+
+        self.on_device_db = None
+
+    def load_swm_on_device_db(self):
+        db_path = os.path.join(self.config.android_session_storage_path, "db.json")
+        self.on_device_db = SWMOnDeviceDatabase(db_path, self.adb_wrapper)
 
     def _get_binary(self, name: str) -> str:
         return search_or_obtain_binary_path_from_environmental_variable_or_download(
@@ -383,56 +403,33 @@ class AppManager:
     def __init__(self, swm: SWM):
         self.swm = swm
         self.config = swm.config
-        self.db = self.load_swm_db_from_device(swm.current_device)
-
-    def load_swm_db_from_device(self, current_device):
-        db_path = os.path.join(self.config.android_session_storage_path, "db.json")
-        return SWMOnDeviceDatabase(db_path)
 
     def get_app_last_used_time_from_device(self):
         last_used_time = self.swm.adb_wrapper.execute()
         return last_used_time
 
-    def get_app_last_used_time_from_db(self, package_id):
-        device_id = self.swm.device
-        last_used_time = self.swm.db.get_app_last_used_time(device_id, package_id)
+    def get_app_last_used_time_from_db(self, package_id: str):
+        device_id = self.swm.current_device
+        last_used_time = self.swm.on_device_db.get_app_last_used_time(
+            device_id, package_id
+        )
         return last_used_time
 
     def search(self):
-        return self.list(search=True)
+        apps = self.list()
+        return self.swm.fzf_wrapper.select_item(apps)
 
-    def list(self, search: bool = False, most_used: Optional[int] = None):
+    def list(self, most_used: Optional[int] = None, print_formatted: bool = False):
         if most_used:
             apps = self.list_most_used_apps(most_used)
         else:
             apps = self.list_all_apps()
 
-        if search:
-            return self.swm.fzf_wrapper.select_item(apps)
-        return apps
+        if print_formatted:
+            df = pandas.DataFrame(apps)
+            print(df.to_string(index=False))
 
-    def list_package_id_and_alias(self):
-        # scrcpy --list-apps
-        output = self.swm.scrcpy_wrapper.check_output(["--list-apps"])
-        # now, parse these apps
-        parseable_lines = []
-        for line in output.splitlines():
-            # line: "package_id alias"
-            line = line.strip()
-            if line.startswith("* "):
-                # system app
-                parseable_lines.append(line)
-            elif line.startswith("- "):
-                # user app
-                parseable_lines.append(line)
-            else:
-                # skip this line
-                ...
-        ret = []
-        for it in parseable_lines:
-            result = parse_scrcpy_app_list_output_single_line(it)
-            ret.append(result)
-        return ret
+        return apps
 
     def run(self, app_name: str, scrcpy_args: List[str] = None):
         # TODO: memorize the last scrcpy run args, by default in swm config
@@ -507,6 +504,7 @@ scrcpy_args: []
                 it["last_used_time"] = last_used_time
             else:
                 it["last_used_time"] = -1
+        return package_list
 
     def list_most_used_apps(self, limit: int) -> List[str]:
         # Placeholder implementation
@@ -524,13 +522,11 @@ class SessionManager:
         os.makedirs(self.session_dir, exist_ok=True)
 
     def search(self):
-        return self.list(search=True)
+        sessions = self.list()
+        return self.swm.fzf_wrapper.select_item(sessions)
 
-    def list(self, search: bool = False) -> List[str]:
+    def list(self) -> List[str]:
         sessions = [f for f in os.listdir(self.session_dir) if f.endswith(".json")]
-
-        if search:
-            return self.swm.fzf_wrapper.select_item(sessions)
         return sessions
 
     def save(self, session_name: str):
@@ -578,13 +574,11 @@ class DeviceManager:
         self.devices_file = os.path.join(swm.cache_dir, "devices.json")
         self.devices = self._load_devices()
 
-    def list(self, search: bool = False) -> List[str]:
-        if search:
-            return self.swm.fzf_wrapper.select_item(list(self.devices.keys()))
+    def list(self) -> List[str]:
         return list(self.devices.keys())
 
     def search(self):
-        return self.list(search=True)
+        return self.swm.fzf_wrapper.select_item(self.list())
 
     def select(self, device_id: str):
         self.swm.set_current_device(device_id)
@@ -610,8 +604,34 @@ class AdbWrapper:
         self.config = config
         self.device = config.get("device")
 
+        self.initialize()
+
+    def online(self):
+        return self.device in self.list_devices()
+
+    def create_file_if_not_exists(self, remote_path: str):
+        if not self.test_path_existance(remote_path):
+            basedir = os.path.dirname(remote_path)
+            self.create_dirs(basedir)
+            self.touch(remote_path)
+
+    def touch(self, remote_path: str):
+        self.execute(["shell", "touch", remote_path])
+
+    def initialize(self):
+        if self.online():
+            self.create_swm_dir()
+
+    def test_path_existance(self, remote_path: str):
+        cmd = ["shell", "test", "-e", remote_path]
+        result = self.execute(cmd, check=False)
+        if result.returncode == 0:
+            return True
+        return False
+
     def set_device(self, device_id: str):
         self.device = device_id
+        self.initialize()
 
     def _build_cmd(self, args: List[str]) -> List[str]:
         cmd = [self.adb_path]
@@ -620,12 +640,15 @@ class AdbWrapper:
         cmd.extend(args)
         return cmd
 
-    def execute(self, args: List[str], capture: bool = False) -> Optional[str]:
+    def execute(
+        self, args: List[str], capture: bool = False, text=True, check=True
+    ) -> subprocess.CompletedProcess:
         cmd = self._build_cmd(args)
-        result = subprocess.run(cmd, capture_output=capture, text=True, check=True)
-        if capture:
-            return result.stdout.strip()
-        return None
+        result = subprocess.run(cmd, capture_output=capture, text=text, check=check)
+        return result
+
+    def check_output(self, args: List[str]) -> str:
+        return self.execute(args, capture=True).stdout.strip()
 
     def read_file(self, remote_path: str) -> str:
         """Read a remote file's content as a string."""
@@ -669,16 +692,14 @@ class AdbWrapper:
     def retrieve_app_icon(self, app_id: str): ...
 
     def get_android_version(self) -> str:
-        return self.execute(
-            ["shell", "getprop", "ro.build.version.release"], capture=True
-        )
+        return self.check_output(["shell", "getprop", "ro.build.version.release"])
 
     def get_device_architecture(self) -> str:
-        return self.execute(["shell", "getprop", "ro.product.cpu.abi"], capture=True)
+        return self.check_output(["shell", "getprop", "ro.product.cpu.abi"])
 
     def list_devices(self) -> List[str]:
         # TODO: detect and filter unauthorized and abnormal devices
-        output = self.execute(["devices"], capture=True)
+        output = self.check_output(["devices"])
         devices = []
         for line in output.splitlines()[1:]:
             if line.strip() and "device" in line:
@@ -692,7 +713,7 @@ class AdbWrapper:
         return devices
 
     def list_packages(self) -> List[str]:
-        output = self.execute(["shell", "pm", "list", "packages"], capture=True)
+        output = self.check_output(["shell", "pm", "list", "packages"])
         packages = []
         for line in output.splitlines():
             if line.startswith("package:"):
@@ -700,7 +721,14 @@ class AdbWrapper:
         return packages
 
     def create_swm_dir(self):
-        self.execute(["shell", "mkdir", "-p", self.config.android_session_storage_path])
+        swm_dir = self.config.android_session_storage_path
+        if self.test_path_existance(swm_dir):
+            return
+        print("On device SWM directory not found, creating it now...")
+        self.create_dirs(swm_dir)
+
+    def create_dirs(self, dirpath: str):
+        self.execute(["shell", "mkdir", "-p", dirpath])
 
     def push_aapt(self, device_path: str = None):
         if device_path is None:
@@ -724,6 +752,36 @@ class ScrcpyWrapper:
         self.scrcpy_path = scrcpy_path
         self.config = config
         self.device = config.get("device")
+
+    # TODO: use "scrcpy --list-apps" instead of using aapt to parse app labels
+
+    def list_package_id_and_alias(self):
+        # scrcpy --list-apps
+        output = self.check_output(["--list-apps"])
+        # now, parse these apps
+        parseable_lines = []
+        for line in output.splitlines():
+            # line: "package_id alias"
+            line = line.strip()
+            if line.startswith("* "):
+                # system app
+                parseable_lines.append(line)
+            elif line.startswith("- "):
+                # user app
+                parseable_lines.append(line)
+            else:
+                # skip this line
+                ...
+        ret = []
+        for it in parseable_lines:
+            result = parse_scrcpy_app_list_output_single_line(it)
+            ret.append(result)
+        return ret
+
+    def build_window_title_args(self, device_name: str, app_name: str):
+        # TODO: set window title as "<device_name> - <app_name>"
+        # --window-title=<title>
+        return ["--window-title", "%s - %s" % (device_name, app_name)]
 
     def set_device(self, device_id: str):
         self.device = device_id
@@ -836,11 +894,16 @@ def load_or_create_config(cache_dir: str, config_path: str) -> omegaconf.DictCon
     return config
 
 
-def override_system_excepthook(program_specific_params: Dict):
+def override_system_excepthook(
+    program_specific_params: Dict, ignorable_exceptions: list
+):
     def custom_excepthook(exc_type, exc_value, exc_traceback):
-        traceback.print_exception(exc_type, exc_value, exc_traceback, file=sys.stderr)
-        print("\nAn unhandled exception occurred, showing diagnostic info:")
-        print_diagnostic_info(program_specific_params)
+        if exc_type not in ignorable_exceptions:
+            traceback.print_exception(
+                exc_type, exc_value, exc_traceback, file=sys.stderr
+            )
+            print("\nAn unhandled exception occurred, showing diagnostic info:")
+            print_diagnostic_info(program_specific_params)
 
     sys.excepthook = custom_excepthook
 
@@ -852,26 +915,46 @@ def parse_args():
 def main():
     # Setup cache directory
     default_cache_dir = os.path.expanduser("~/.swm")
-    SWM_CACHE_DIR = os.environ.get("SWM_CACHE_DIR", default_cache_dir)
-    os.makedirs(SWM_CACHE_DIR, exist_ok=True)
 
-    config_path = get_config_path(SWM_CACHE_DIR)
+    SWM_CACHE_DIR = os.environ.get("SWM_CACHE_DIR", default_cache_dir)
+
+    os.makedirs(SWM_CACHE_DIR, exist_ok=True)
+    # Parse CLI arguments
+    args = parse_args()
+
+    config_path = args.get("--config")
+    if config_path:
+        print("Using CLI given config path:", config_path)
+    else:
+        config_path = get_config_path(SWM_CACHE_DIR)
     # Load or create config
     config = load_or_create_config(SWM_CACHE_DIR, config_path)
 
-    # Parse CLI arguments
-    args = parse_args()
+    verbose = args["--verbose"]
+    debug = args["--debug"]
 
     # Prepare diagnostic info
     program_specific_params = {
         "cache_dir": SWM_CACHE_DIR,
         "config": omegaconf.OmegaConf.to_container(config),
+        "config_path": config_path,
         "argv": sys.argv,
         "parsed_args": args,
         "executable": sys.executable,
         "config_overriden_parameters": {},
+        "verbose": verbose,
     }
-    override_system_excepthook(program_specific_params)
+
+    if verbose:
+        print("Verbose mode on. Showing diagnostic info:")
+        print_diagnostic_info(program_specific_params)
+    override_system_excepthook(
+        program_specific_params=program_specific_params,
+        ignorable_exceptions=[] if debug else [NoDeviceError],
+    )
+
+    config.verbose = verbose
+    config.debug = debug
 
     # Initialize SWM core
     swm = SWM(config)
@@ -919,7 +1002,7 @@ def main():
         # Device specific branches
 
         # Handle device selection
-        cli_device = args["<device_selected>"]
+        cli_device = args["--device"]
         config_device = config.device
 
         if cli_device is not None:
@@ -931,13 +1014,13 @@ def main():
 
         if current_device is not None:
             swm.set_current_device(current_device)
+            swm.load_swm_on_device_db()
         else:
-            raise ValueError("No available device")
+            raise NoDeviceError("No available device")
 
         if args["app"]:
             if args["list"]:
-                apps = swm.app_manager.list()
-                print("\n".join(apps))
+                apps = swm.app_manager.list(print_formatted=True)
             elif args["search"]:
                 app = swm.app_manager.search()
                 ans = input("Please select an action (run|config):")
@@ -951,8 +1034,9 @@ def main():
                     elif opt == "show":
                         swm.app_manager.show_app_config(app_name)
             elif args["most-used"]:
-                apps = swm.app_manager.list(most_used=args.get("count", 10))
-                print("\n".join(apps))
+                swm.app_manager.list(
+                    most_used=args.get("<count>", 10), print_formatted=True
+                )
             elif args["run"]:
                 swm.app_manager.run(args["<app_name>"], args["<scrcpy_args>"])
 
