@@ -2,7 +2,7 @@
 <div align="center">
 <img src="logo/logo.png" alt="logo" width="200"/>
 
-<h1>SWM: scrcpy window manager</h1>
+<h1>Scrcpy Window Manager</h1>
 </div>
 
 distribute it as a python package, or compile it using nuitka
