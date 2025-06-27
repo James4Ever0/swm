@@ -28,22 +28,24 @@ Options:
                 Device name or ID for executing the command
 """
 
+import json
 import os
 import platform
 import shutil
-import omegaconf
-import sys
-import traceback
-import json
 import subprocess
-import requests
+import sys
+import tempfile
 import time
-import tempfile
-from docopt import docopt
-from typing import List, Dict, Optional
-import tempfile
+import traceback
 import zipfile
+from datetime import datetime
+from typing import Dict, List, Optional
+
+import omegaconf
+import requests
 import yaml
+from docopt import docopt
+from tinydb import Query, Storage, TinyDB
 
 __version__ = "0.1.0"
 
@@ -53,6 +55,32 @@ __version__ = "0.1.0"
 # TODO: override icon with SCRCPY_ICON_PATH=<app_icon_path>
 
 # TODO: use "scrcpy --list-apps" instead of using aapt to parse app labels
+
+
+def reverse_text(text):
+    return "".join(reversed(text))
+
+
+def parse_scrcpy_app_list_output_single_line(text: str):
+    ret = {}
+    text = text.strip()
+
+    package_type_symbol, rest = text.split(" ", maxsplit=1)
+
+    reversed_text = reverse_text(rest)
+
+    ret["type_symbol"] = package_type_symbol
+
+    package_id_reverse, rest = reversed_text.split(" ", maxsplit=1)
+
+    package_id = reverse_text(package_id_reverse)
+    ret["id"] = package_id
+
+    package_alias = reverse_text(rest).strip()
+
+    ret["alias"] = package_alias
+    return ret
+
 
 def select_editor():
     unix_editors = ["vim", "nano", "vi", "emacs"]
@@ -77,11 +105,13 @@ def edit_file(filepath: str, editor_binpath: str):
 
 
 def edit_or_open_file(filepath: str):
+    print("Editing file:", filepath)
     editor_binpath = select_editor()
     if editor_binpath:
         edit_file(filepath, editor_binpath)
     else:
         open_file_with_default_application(filepath)
+    print("Done editing file:", filepath)
 
 
 def open_file_with_default_application(filepath: str):
@@ -220,6 +250,60 @@ def download_binary_into_cache_dir_and_return_path(
     return bin_path
 
 
+class ADBStorage(Storage):
+    def __init__(self, filename, adb_wrapper: "AdbWrapper"):  # (1)
+        self.filename = filename
+        self.adb_wrapper = adb_wrapper
+
+    def read(self):
+        try:
+            content = self.adb_wrapper.read_file(self.filename)
+            data = json.loads(content)
+            return data
+        except json.JSONDecodeError:
+            return None
+
+    def write(self, data):
+        content = json.dumps(data)
+        self.adb_wrapper.write_file(self.filename, content)
+
+    def close(self):
+        pass
+
+
+class SWMOnDeviceDatabase:
+    def __init__(self, db_path: str, adb_wrapper: "AdbWrapper"):
+        self.db_path = db_path
+        self.storage = ADBStorage(db_path, adb_wrapper)
+        self._db = TinyDB(db_path, storage=self.storage)
+
+    def write_app_last_used_time(
+        self, device_id, app_id: str, last_used_time: datetime
+    ):
+        AppUsage = Query()
+
+        # Upsert document: update if exists, insert otherwise
+        self._db.table("app_usage").upsert(
+            {
+                "device_id": device_id,
+                "app_id": app_id,
+                "last_used_time": last_used_time.isoformat(),
+            },
+            (AppUsage.device_id == device_id) & (AppUsage.app_id == app_id),
+        )
+
+    def get_app_last_used_time(self, device_id, app_id: str) -> datetime:
+        AppUsage = Query()
+
+        # Search for matching document
+        result = self._db.table("app_usage").get(
+            (AppUsage.device_id == device_id) & (AppUsage.app_id == app_id)
+        )
+
+        # Return datetime object if found, None otherwise
+        return datetime.fromisoformat(result["last_used_time"]) if result else None
+
+
 class SWM:
     def __init__(self, config: omegaconf.DictConfig):
         self.config = config
@@ -299,6 +383,20 @@ class AppManager:
     def __init__(self, swm: SWM):
         self.swm = swm
         self.config = swm.config
+        self.db = self.load_swm_db_from_device(swm.current_device)
+
+    def load_swm_db_from_device(self, current_device):
+        db_path = os.path.join(self.config.android_session_storage_path, "db.json")
+        return SWMOnDeviceDatabase(db_path)
+
+    def get_app_last_used_time_from_device(self):
+        last_used_time = self.swm.adb_wrapper.execute()
+        return last_used_time
+
+    def get_app_last_used_time_from_db(self, package_id):
+        device_id = self.swm.device
+        last_used_time = self.swm.db.get_app_last_used_time(device_id, package_id)
+        return last_used_time
 
     def search(self):
         return self.list(search=True)
@@ -312,6 +410,29 @@ class AppManager:
         if search:
             return self.swm.fzf_wrapper.select_item(apps)
         return apps
+
+    def list_package_id_and_alias(self):
+        # scrcpy --list-apps
+        output = self.swm.scrcpy_wrapper.check_output(["--list-apps"])
+        # now, parse these apps
+        parseable_lines = []
+        for line in output.splitlines():
+            # line: "package_id alias"
+            line = line.strip()
+            if line.startswith("* "):
+                # system app
+                parseable_lines.append(line)
+            elif line.startswith("- "):
+                # user app
+                parseable_lines.append(line)
+            else:
+                # skip this line
+                ...
+        ret = []
+        for it in parseable_lines:
+            result = parse_scrcpy_app_list_output_single_line(it)
+            ret.append(result)
+        return ret
 
     def run(self, app_name: str, scrcpy_args: List[str] = None):
         # TODO: memorize the last scrcpy run args, by default in swm config
@@ -351,7 +472,7 @@ class AppManager:
 
     def get_or_create_app_config(self, app_name: str) -> Dict:
         app_config_path = self.get_app_config_path(app_name)
-        
+
         if not os.path.exists(app_config_path):
             print("Creating default config for app:", app_name)
             # Write default YAML template with comments
@@ -377,11 +498,22 @@ scrcpy_args: []
             yaml.safe_dump(config, f)
 
     def list_all_apps(self) -> List[str]:
-        return self.swm.adb_wrapper.list_packages()
+        # package_ids = self.swm.adb_wrapper.list_packages()
+        package_list = self.swm.scrcpy_wrapper.list_package_id_and_alias()
+        for it in package_list:
+            package_id = it["id"]
+            last_used_time = self.get_app_last_used_time_from_db(package_id)
+            if last_used_time:
+                it["last_used_time"] = last_used_time
+            else:
+                it["last_used_time"] = -1
 
     def list_most_used_apps(self, limit: int) -> List[str]:
         # Placeholder implementation
-        return self.list_all_apps()[:limit]
+        all_apps = self.list_all_apps()
+        all_apps.sort(key=lambda x: -x["last_used_time"])
+        selected_apps = all_apps[:limit]
+        return selected_apps
 
 
 class SessionManager:
@@ -495,6 +627,47 @@ class AdbWrapper:
             return result.stdout.strip()
         return None
 
+    def read_file(self, remote_path: str) -> str:
+        """Read a remote file's content as a string."""
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+        try:
+            self.pull_file(remote_path, tmp_path)
+            with open(tmp_path, "r") as f:
+                return f.read()
+        finally:
+            os.unlink(tmp_path)
+
+    def write_file(self, remote_path: str, content: str):
+        """Write a string to a remote file."""
+        with tempfile.NamedTemporaryFile(mode="w", delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+            tmp_file.write(content)
+        try:
+            self.push_file(tmp_path, remote_path)
+        finally:
+            os.unlink(tmp_path)
+
+    def pull_file(self, remote_path: str, local_path: str):
+        """Pull a file from the device to a local path."""
+        self.execute(["pull", remote_path, local_path])
+
+    def push_file(self, local_path: str, remote_path: str):
+        """Push a local file to the device."""
+        self.execute(["push", local_path, remote_path])
+
+    def install_apk(self, apk_path: str):
+        """Install an APK file on the device."""
+        self.execute(["install", apk_path])
+
+    def execute_java_code(java_code):
+        # https://github.com/zhanghai/BeeShell
+        # adb install --instant app.apk
+        # adb shell pm_path=`pm path me.zhanghai.android.beeshell` && apk_path=${pm_path#package:} && `dirname $apk_path`/lib/*/libbsh.so
+        ...
+
+    def retrieve_app_icon(self, app_id: str): ...
+
     def get_android_version(self) -> str:
         return self.execute(
             ["shell", "getprop", "ro.build.version.release"], capture=True
@@ -566,6 +739,11 @@ class ScrcpyWrapper:
         cmd = self._build_cmd(args)
         subprocess.run(cmd, check=True)
 
+    def check_output(self, args: List[str]) -> str:
+        cmd = self._build_cmd(args)
+        output = subprocess.check_output(cmd).decode("utf-8")
+        return output
+
     def launch_app(
         self,
         package_name: str,
@@ -576,7 +754,7 @@ class ScrcpyWrapper:
 
         configured_window_options = []
 
-        zoom_factor = self.config.zoom_factor # TODO: make use of it
+        zoom_factor = self.config.zoom_factor  # TODO: make use of it
 
         if window_params:
             for it in ["x", "y", "width", "height"]:
@@ -589,8 +767,10 @@ class ScrcpyWrapper:
                 if it.split("=")[0] not in configured_window_options:
                     args.append(it)
                 else:
-                    print("Warning: one of scrcpy options '%s' is already configured via window options" % it)
-
+                    print(
+                        "Warning: one of scrcpy options '%s' is already configured via window options"
+                        % it
+                    )
 
         args.extend(["--start-app", package_name])
 
@@ -622,6 +802,7 @@ def create_default_config(cache_dir: str) -> omegaconf.DictConfig:
             "cache_dir": cache_dir,
             "device": None,
             "zoom_factor": 1.0,
+            "db_path": os.path.join(cache_dir, "apps.db"),
             "session_autosave": True,
             "android_session_storage_path": "/sdcard/.swm",
             "github_mirrors": [
