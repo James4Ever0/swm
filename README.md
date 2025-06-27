@@ -1,6 +1,6 @@
 SWM: scrcpy window manager
 
-<img src="logo/logo.jpg" alt="logo" width="50"/>
+<img src="logo/logo.png" alt="logo" width="50"/>
 
 distribute it as a python package, or compile it using nuitka
 
