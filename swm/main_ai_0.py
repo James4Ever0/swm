@@ -3,19 +3,21 @@
 Usage:
   swm [options] adb [<adb_args>...]
   swm [options] scrcpy [<scrcpy_args>...]
-  swm [options] app run <app_name> [<scrcpy_args>...]
-  swm [options] app list [last_used] [type]
+  swm [options] app run <query> [no-new-display] [<init_config>]
+  swm [options] app list [last_used] [type] [latest]
   swm [options] app search [type] [index]
   swm [options] app most-used [<count>]
   swm [options] app config show-default
-  swm [options] app config <app_name> (show|edit)
+  swm [options] app config (show|edit) <query>
+  swm [options] app config name <query> <template_name>
   swm [options] session list [last_used]
   swm [options] session search [index]
-  swm [options] session restore [session_name]
-  swm [options] session (save|delete) <session_name>
+  swm [options] session restore [query]
+  swm [options] session delete <query>
+  swm [options] session save <session_name>
   swm [options] device list [last_used]
   swm [options] device search [index]
-  swm [options] device select <device_id>
+  swm [options] device select <query>
   swm [options] device name <device_id> <device_alias>
   swm [options] baseconfig show [diagnostic]
   swm [options] baseconfig show-default
@@ -34,6 +36,7 @@ Options:
   --debug       Debug mode, capturing all exceptions.
 """
 
+import functools
 import json
 import os
 import platform
@@ -44,12 +47,14 @@ import tempfile
 import time
 import traceback
 import zipfile
+import base64
 from datetime import datetime
-from typing import Dict, List, Optional
-import functools
+from typing import Any, Dict, List, Optional
 
-import pandas
+import pyperclip
+import pyautogui
 import omegaconf
+import pandas
 import requests
 import yaml
 from docopt import docopt
@@ -57,7 +62,41 @@ from tinydb import Query, Storage, TinyDB
 
 __version__ = "0.1.0"
 
+
+def convert_unicode_escape(input_str):
+    # Extract the hex part after 'u+'
+    hex_str = input_str[2:]
+    # Convert hex string to integer and then to Unicode character
+    return chr(int(hex_str, 16))
+
+
+def encode_base64_str(data: str):
+    encoded_bytes = base64.b64encode(data.encode("utf-8"))
+    encoded_str = encoded_bytes.decode("utf-8")
+    return encoded_str
+
+
+# TODO: use logger
+# import structlog
+# import loguru
+
+# TODO: init app with named config
+
+# TODO: put manual configuration into first priority, and we should only take care of those would not be manually done (like unicode input)
+# TODO: create github pages for swm
+
+# TODO: Create an app config template repo, along with all other devices, pcs, for easy initialization
+
 # TODO: override icon with SCRCPY_ICON_PATH=<app_icon_path>
+
+# TODO: not allowing exiting the app in the new display, or close the display if the app is exited, or reopen the app if exited
+
+# TODO: configure app with the same id to use the same app config or separate by device
+
+# TODO: write wiki about enabling com.android.shell for root access in kernelsu/magisk
+# TODO: use a special apk for running SWM specific root commands instead of direct invocation of adb root shell
+
+# TODO: monitor the output of scrcpy and capture unicode char input accordingly, for sending unicode char to the adbkeyboard
 
 
 class NoDeviceError(ValueError): ...
@@ -67,6 +106,9 @@ class NoSelectionError(ValueError): ...
 
 
 class NoConfigError(ValueError): ...
+
+
+class NoAppError(ValueError): ...
 
 
 class NoBaseConfigError(ValueError): ...
@@ -150,14 +192,24 @@ def edit_file(filepath: str, editor_binpath: str):
     execute_subprogram(editor_binpath, [filepath])
 
 
+def get_file_content(filepath: str):
+    with open(filepath, "r") as f:
+        return f.read()
+
+
 def edit_or_open_file(filepath: str):
     print("Editing file:", filepath)
+    content_before_edit = get_file_content(filepath)
     editor_binpath = select_editor()
     if editor_binpath:
         edit_file(filepath, editor_binpath)
     else:
         open_file_with_default_application(filepath)
-    print("Done editing file:", filepath)
+    content_after_edit = get_file_content(filepath)
+    if content_before_edit != content_after_edit:
+        print("File has been edited.")
+    else:
+        print("File has not been edited.")
 
 
 def open_file_with_default_application(filepath: str):
@@ -376,7 +428,7 @@ class SWM:
 
         # Initialize components
         self.adb_wrapper = AdbWrapper(self.adb, self.config)
-        self.scrcpy_wrapper = ScrcpyWrapper(self.scrcpy, self.config)
+        self.scrcpy_wrapper = ScrcpyWrapper(self.scrcpy, self.config, self.adb_wrapper)
         self.fzf_wrapper = FzfWrapper(self.fzf)
 
         # Device management
@@ -415,7 +467,12 @@ class SWM:
         elif len(all_devices) == 1:
             # only one device.
             device = all_devices[0]
-            if device != default_device:
+            if default_device is None:
+                print(
+                    "No device is specified in config, using the only device online (%s)"
+                    % device
+                )
+            elif device != default_device:
                 print(
                     "Device selected by config (%s) is not online, using the only device online (%s)"
                     % (default_device, device)
@@ -427,10 +484,13 @@ class SWM:
                 print("Using selected device:", default_device)
                 return default_device
             else:
-                print(
-                    "Device selected by config (%s) is not online, please select one."
-                    % default_device
-                )
+                if default_device is None:
+                    print("No device is specified in config, please select one.")
+                else:
+                    print(
+                        "Device selected by config (%s) is not online, please select one."
+                        % default_device
+                    )
                 prompt_for_device = f"Select a device from: "
                 # TODO: input numbers or else
                 # TODO: show detailed info per device, such as device type, last swm use time, alias, device model, android info, etc...
@@ -506,29 +566,61 @@ class AppManager:
 
         return apps
 
-    def install_and_use_adb_keyboard(self): ...
+    def install_and_use_adb_keyboard(self):
+        self.swm.adb_wrapper.install_adb_keyboard()
 
-    def retrieve_app_icon(self, package_id: str): ...
+    def retrieve_app_icon(self, package_id: str, icon_path: str):
+        self.swm.adb_wrapper.retrieve_app_icon(package_id, icon_path)
 
-    def run(self, app_name: str, scrcpy_args: List[str] = None):
+    def build_window_title(self, package_id: str):
+        # TODO: set window title as "<device_name> - <app_name>"
+        # --window-title=<title>
+        device_id = self.swm.adb_wrapper.device
+        device_name = self.swm.adb_wrapper.get_device_name(device_id)
+        app_name = package_id
+        # app_name = self.swm.adb_wrapper.get_app_name(package_id)
+        return "%s - %s" % (app_name, device_name)
+
+    def check_app_existance(self, app_id):
+        return self.swm.adb_wrapper.check_app_existance(app_id)
+
+    def run(self, app_id: str, scrcpy_args: List[str] = None, new_display: bool = True):
+
+        if not self.check_app_existance(app_id):
+            raise NoAppError(
+                "Applicaion %s does not exist on device %s"
+                % (app_id, self.swm.current_device)
+            )
         # TODO: memorize the last scrcpy run args, by default in swm config
         # Get app config
         env = {}
-        app_config = self.get_or_create_app_config(app_name)
-        if app_config.get("use_adb_keyboard", False):
+        app_config = self.get_or_create_app_config(app_id)
+        use_adb_keyboard = app_config.get("use_adb_keyboard", False)
+        if use_adb_keyboard:
             self.install_and_use_adb_keyboard()
+
         if app_config.get("retrieve_app_icon", False):
-            icon_path = self.retrieve_app_icon(app_name)
-            env["SCRCPY_ICON_PATH"] = icon_path
+            print("[Warning] Retrieving app icon is not implemented yet")
+            # icon_path = os.path.join(self.swm.config_dir, "icons", "%s.png" % app_id)
+            # if not os.path.exists(icon_path):
+            #     self.retrieve_app_icon(app_id, icon_path)
+            #     env["SCRCPY_ICON_PATH"] = icon_path
         # Add window config if exists
         win = app_config.get("window", None)
 
         if scrcpy_args is None:
             scrcpy_args = app_config.get("scrcpy_args", None)
 
+        title = self.build_window_title(app_id)
+
         # Execute scrcpy
         self.swm.scrcpy_wrapper.launch_app(
-            app_name, window_params=win, scrcpy_args=scrcpy_args
+            app_id,
+            window_params=win,
+            scrcpy_args=scrcpy_args,
+            title=title,
+            new_display=new_display,
+            use_adb_keyboard=use_adb_keyboard,
         )
 
     def edit_app_config(self, app_name: str) -> bool:
@@ -598,12 +690,218 @@ retrieve_app_icon: true
         return selected_apps
 
 
+# TODO: manual specification instead of automatic
+# TODO: specify pc display size in session config
 class SessionManager:
-    def __init__(self, swm: SWM):
+    def __init__(self, swm: Any):
         self.swm = swm
         self.config = swm.config
         self.session_dir = os.path.join(swm.cache_dir, "sessions")
         os.makedirs(self.session_dir, exist_ok=True)
+
+    def get_swm_window_params(self) -> List[Dict[str, Any]]:
+        windows = self.get_all_window_params()
+        windows = [it for it in windows if it["title"].startswith("[SWM]")]
+        return
+
+    def get_all_window_params(self) -> List[Dict[str, Any]]:
+        os_type = platform.system()
+        if os_type == "Linux":
+            if not self._is_wmctrl_installed():
+                print("Please install wmctrl to manage windows on Linux.")
+                return []
+            return self._get_windows_linux()
+        elif os_type == "Windows":
+            return self._get_windows_windows()
+        elif os_type == "Darwin":
+            return self._get_windows_macos()
+        else:
+            print(f"Unsupported OS: {os_type}")
+            return []
+
+    def _is_wmctrl_installed(self) -> bool:
+        try:
+            subprocess.run(
+                ["wmctrl", "-v"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+
+    def _get_windows_linux(self) -> List[Dict[str, Any]]:
+        try:
+            output = subprocess.check_output(["wmctrl", "-lGx"]).decode("utf-8")
+            windows = []
+            for line in output.splitlines():
+                parts = line.split(maxsplit=6)
+                if len(parts) < 7:
+                    continue
+                desktop_id = parts[1]
+                pid = parts[2]
+                x, y, width, height = map(int, parts[3:7])
+                title = parts[6]
+                windows.append(
+                    {
+                        "title": title,
+                        "x": x,
+                        "y": y,
+                        "width": width,
+                        "height": height,
+                        "desktop_id": desktop_id,
+                        "pid": pid,
+                    }
+                )
+            return windows
+        except Exception as e:
+            print(f"Error getting windows on Linux: {e}")
+            return []
+
+    def _get_windows_windows(self) -> List[Dict[str, Any]]:
+        try:
+            import pygetwindow as gw
+
+            windows = []
+            for win in gw.getAllWindows():
+                title = win.title
+                windows.append(
+                    {
+                        "title": title,
+                        "x": win.left,
+                        "y": win.top,
+                        "width": win.width,
+                        "height": win.height,
+                        "is_maximized": win.isMaximized,
+                        "hwnd": win._hWnd,
+                    }
+                )
+            return windows
+        except ImportError:
+            print("Please install pygetwindow: pip install pygetwindow")
+            return []
+        except Exception as e:
+            print(f"Error getting windows on Windows: {e}")
+            return []
+
+    def _get_windows_macos(self) -> List[Dict[str, Any]]:
+        try:
+            from AppKit import NSWorkspace
+
+            windows = []
+            for app in NSWorkspace.sharedWorkspace().runningApplications():
+                if app.isActive():
+                    app_name = app.localizedName()
+                    windows.append({"title": app_name, "pid": app.processIdentifier()})
+            return windows
+        except ImportError:
+            print("macOS support requires PyObjC. Install with: pip install pyobjc")
+            return []
+        except Exception as e:
+            print(f"Error getting windows on macOS: {e}")
+            return []
+
+    def move_window_to_position(self, window_title: str, window_params: Dict[str, Any]):
+        os_type = platform.system()
+        if os_type == "Linux":
+            self._move_window_linux(window_title, window_params)
+        elif os_type == "Windows":
+            self._move_window_windows(window_title, window_params)
+        elif os_type == "Darwin":
+            self._move_window_macos(window_title, window_params)
+        else:
+            print(f"Unsupported OS: {os_type}")
+
+    def _move_window_linux(self, window_title: str, window_params: Dict[str, Any]):
+        if not self._is_wmctrl_installed():
+            print("wmctrl not installed. Cannot move window.")
+            return
+        try:
+            x = window_params.get("x", 0)
+            y = window_params.get("y", 0)
+            width = window_params.get("width", 800)
+            height = window_params.get("height", 600)
+            desktop_id = window_params.get("desktop_id", "0")
+            cmd = f"wmctrl -r '{window_title}' -e '0,{x},{y},{width},{height}'"
+            if desktop_id:
+                cmd += f" -t {desktop_id}"
+            subprocess.run(cmd, shell=True, check=True)
+        except Exception as e:
+            print(f"Error moving window on Linux: {e}")
+
+    def _move_window_windows(self, window_title: str, window_params: Dict[str, Any]):
+        try:
+            import pygetwindow as gw
+
+            wins = gw.getWindowsWithTitle(window_title)
+            if wins:
+                win = wins[0]
+                if win.isMaximized:
+                    win.restore()
+                win.resizeTo(
+                    window_params.get("width", 800), window_params.get("height", 600)
+                )
+                win.moveTo(window_params.get("x", 0), window_params.get("y", 0))
+        except ImportError:
+            print("Please install pygetwindow: pip install pygetwindow")
+        except Exception as e:
+            print(f"Error moving window on Windows: {e}")
+
+    def _move_window_macos(self, window_title: str, window_params: Dict[str, Any]):
+        try:
+            from AppKit import NSWorkspace
+
+            for app in NSWorkspace.sharedWorkspace().runningApplications():
+                if app.localizedName() == window_title:
+                    app.activateWithOptions_(NSWorkspaceLaunchDefault)
+                    break
+            print(
+                "Note: Detailed window moving on macOS is complex and not fully implemented here."
+            )
+        except ImportError:
+            print("macOS support requires PyObjC. Install with: pip install pyobjc")
+        except Exception as e:
+            print(f"Error moving window on macOS: {e}")
+
+    def get_pc_screen_size(self) -> Optional[Dict[str, int]]:
+        os_type = platform.system()
+        if os_type == "Linux":
+            try:
+                output = subprocess.check_output(["xrandr", "--query"]).decode("utf-8")
+                for line in output.splitlines():
+                    if "*+" in line:
+                        parts = line.split()
+                        for i, part in enumerate(parts):
+                            if "+" in part and "x" in part:
+                                width, height = part.split("x")
+                                return {"width": int(width), "height": int(height)}
+            except Exception as e:
+                print(f"Error getting screen size on Linux: {e}")
+        elif os_type == "Windows":
+            try:
+                import win32api
+
+                width = win32api.GetSystemMetrics(0)
+                height = win32api.GetSystemMetrics(1)
+                return {"width": width, "height": height}
+            except ImportError:
+                print("win32api not available. Install pywin32.")
+            except Exception as e:
+                print(f"Error getting screen size on Windows: {e}")
+        elif os_type == "Darwin":
+            try:
+                from AppKit import NSScreen
+
+                screen = NSScreen.mainScreen().frame().size
+                return {"width": int(screen.width), "height": int(screen.height)}
+            except ImportError:
+                print("macOS support requires PyObjC. Install with: pip install pyobjc")
+            except Exception as e:
+                print(f"Error getting screen size on macOS: {e}")
+        else:
+            print(f"Unsupported OS: {os_type}")
+        return None
 
     def search(self):
         sessions = self.list()
@@ -683,8 +981,49 @@ class AdbWrapper:
         self.adb_path = adb_path
         self.config = config
         self.device = config.get("device")
-
+        self.remote_swm_dir = self.config.android_session_storage_path
         self.initialize()
+        self.remote = self
+
+    def get_active_displays(self):
+        # adb shell wm size -d <display_id>
+        # adb shell wm density -d <display_id>
+        ...
+    
+    def get_active_display_ids(self):
+        # adb shell dumpsys display
+        # scrcpy --list-displays
+        ...
+
+    def check_app_is_foreground(self, app_id):
+        # convert the binary output from "wm dump-visible-window-views" into ascii byte by byte, those not viewable into "."
+        # adb shell wm dump-visible-window-views | xxd | grep <app_id>
+
+        # or use the readable output from dumpsys
+        # adb shell "dumpsys activity activities | grep ResumedActivity" | grep <app_id>
+        ...
+
+    def check_app_existance(self, app_id):
+        apk_path = self.get_app_apk_path(app_id)
+        if apk_path:
+            return True
+        return False
+
+    def check_if_screen_unlocked(self): ...
+    # reference: https://stackoverflow.com/questions/35275828/is-there-a-way-to-check-if-android-device-screen-is-locked-via-adb
+    # adb shell dumpsys power | grep 'mHolding'
+    # If both are false, the display is off.
+    # If mHoldingWakeLockSuspendBlocker is false, and mHoldingDisplaySuspendBlocker is true, the display is on, but locked.
+    # If both are true, the display is on.
+
+    def adb_keyboard_input_text(self, text: str):
+        # adb shell am broadcast -a ADB_INPUT_B64 --es msg `echo -n '你好' | base64`
+        base64_text = encode_base64_str(text)
+        self.execute(
+            ["am", "broadcast", "-a", "ADB_INPUT_B64", "--es", "msg", base64_text]
+        )
+        # TODO: restore the previously using keyboard after swm being detached, either manually or using script/apk
+        ...
 
     def get_device_name(self, device_id):
         # self.set_device(device_id)
@@ -780,17 +1119,132 @@ class AdbWrapper:
         """Push a local file to the device."""
         self.execute(["push", local_path, remote_path])
 
-    def install_apk(self, apk_path: str):
-        """Install an APK file on the device."""
-        self.execute(["install", apk_path])
+    def get_swm_apk_path(self, apk_name: str) -> str:
+        path = os.path.join(self.config.cache_dir, f"apk/{apk_name}.apk")
+        if os.path.exists(path):
+            return path
+        raise FileNotFoundError(f"APK file {apk_name} not found in cache")
 
-    def execute_java_code(java_code):
+    def install_adb_keyboard(self):
+        apk_path = self.get_swm_apk_path("ADBKeyboard")
+        self.install_apk(apk_path)
+
+    def execute_su_cmd(self, cmd: str):
+        self.execute(["shell", "su", "-c", cmd])
+
+    def execute_su_script(self, script: str):
+        tmpfile = "/sdcard/.swm/tmp.sh"
+        self.write_file(tmpfile, script)
+        cmd = "sh %s" % tmpfile
+        self.execute_su_cmd(cmd)
+
+    def enable_adb_keyboard(self):
+        self.execute(
+            [
+                "shell",
+                "am",
+                "start",
+                "-n",
+                "com.jb.gokeyboard/.activity.GoKeyboardActivity",
+            ]
+        )
+
+    def disable_adb_keyboard(self):
+        self.execute(["shell", "am", "force-stop", "com.jb.gokeyboard"])
+
+    def install_apk(self, apk_path: str, instant=False):
+        """Install an APK file on the device."""
+        if os.path.exists(apk_path):
+            cmd = ["install"]
+            if instant:
+                cmd.extend(["--instant"])
+            cmd.append(apk_path)
+            self.execute(cmd)
+        else:
+            raise FileNotFoundError(f"APK file not found: {apk_path}")
+
+    def install_beeshell(self):
+        apk_path = self.get_swm_apk_path("beeshell")
+        self.install_apk(apk_path)
+
+    def execute_java_code(self, java_code):
         # https://github.com/zhanghai/BeeShell
         # adb install --instant app.apk
-        # adb shell pm_path=`pm path me.zhanghai.android.beeshell` && apk_path=${pm_path#package:} && `dirname $apk_path`/lib/*/libbsh.so
-        ...
+        # adb shell pm_path=`pm path me.zhanghai.android.beeshell` && apk_path=${pm_path#package:} && `dirname $apk_path`/lib/*/libbsh.so {tmp_path}
 
-    def retrieve_app_icon(self, app_id: str): ...
+        """Execute Java code on the device."""
+        self.install_beeshell()
+        bsh_tmp_path = "/data/local/tmp/swm_java_code.bsh"
+        sh_tmp_path = "/data/local/tmp/swm_java_code_runner.sh"
+        java_code_runner = (
+            "pm_path=`pm path me.zhanghai.android.beeshell` && apk_path=${pm_path#package:} && `dirname $apk_path`/lib/*/libbsh.so "
+            + bsh_tmp_path
+        )
+        self.write_file(bsh_tmp_path, java_code)
+        self.write_file(sh_tmp_path, java_code_runner)
+
+    def get_app_apk_path(self, app_id: str):
+        output = self.check_output(["shell", "pm", "path", app_id]).strip()
+        if output:
+            prefix = "package:"
+            apk_path = output[len(prefix):]
+            return apk_path
+
+    def extract_app_icon(self, app_apk_remote_path: str, icon_remote_dir: str):
+        extracted_icon_remote_path = ...
+        return extracted_icon_remote_path
+
+    def retrieve_app_icon(self, app_id: str, icon_path: str):
+        remote_icon_png_path = f"/sdcard/.swm/icons/{app_id}_icon.png"
+        tmpdir = "/sdcard/.swm/tmp"
+        if not self.test_path_existance(remote_icon_png_path):
+            aapt_bin_path = self.install_aapt_binary()
+            apk_remote_path = self.get_app_apk_path(app_id)
+            icon_remote_dir = tmpdir
+            icon_remote_raw_path = self.extract_app_icon(
+                apk_remote_path, icon_remote_dir
+            )
+            icon_format = icon_remote_raw_path.lower().split(".")[-1]
+            # TODO:
+            # use self.remote.* for all remote operations
+            if icon_format == "xml":
+                self.convert_icon_xml_to_png(icon_remote_raw_path, remote_icon_png_path)
+            elif icon_format == "png":
+                self.copy_file(icon_remote_raw_path, remote_icon_png_path)
+            elif icon_format == "webp":
+                self.convert_webp_to_png(icon_remote_raw_path, remote_icon_png_path)
+            else:
+                raise Exception("Unknown icon format %s" % icon_format)
+            self.remove_dir(tmpdir, confirm=False)
+
+    def convert_icon_xml_to_png(self, icon_xml_path, icon_png_path):
+        java_code = f"""input_icon_path = "{icon_xml_path}"
+output_icon_path = "{icon_png_path}"
+"""
+        self.execute_java_code(java_code)
+
+    def convert_webp_to_png(self, webp_path, png_path):
+        java_code = f"""input_icon_path = "{webp_path}"
+output_icon_path = "{png_path}"
+"""
+        self.execute_java_code(java_code)
+
+    def copy_file(self, src_path, dst_path):
+        self.execute(["cp", src_path, dst_path])
+
+    def remove_dir(self, dir_path, confirm=True):
+        if confirm:
+            ans = input("Are you sure you want to remove %s? (y/n)" % dir_path)
+            if ans.lower() != "y":
+                print("Aborting...")
+                return
+        self.execute(["rm", "-rf", dir_path])
+
+    def install_aapt_binary(self):
+        aapt_bin_path = os.path.join(self.remote_swm_dir, "aapt")
+        if not self.test_path_existance(aapt_bin_path):
+            self.push_aapt(aapt_bin_path)
+        return aapt_bin_path
 
     def get_android_version(self) -> str:
         return self.check_output(["shell", "getprop", "ro.build.version.release"])
@@ -836,7 +1290,7 @@ class AdbWrapper:
         return packages
 
     def create_swm_dir(self):
-        swm_dir = self.config.android_session_storage_path
+        swm_dir = self.remote_swm_dir
         if self.test_path_existance(swm_dir):
             return
         print("On device SWM directory not found, creating it now...")
@@ -863,10 +1317,13 @@ class AdbWrapper:
 
 
 class ScrcpyWrapper:
-    def __init__(self, scrcpy_path: str, config: omegaconf.DictConfig):
+    def __init__(
+        self, scrcpy_path: str, config: omegaconf.DictConfig, adb_wrapper: "AdbWrapper"
+    ):
         self.scrcpy_path = scrcpy_path
         self.config = config
         self.device = config.get("device")
+        self.adb_wrapper = adb_wrapper
 
     # TODO: use "scrcpy --list-apps" instead of using aapt to parse app labels
 
@@ -892,11 +1349,6 @@ class ScrcpyWrapper:
             result = parse_scrcpy_app_list_output_single_line(it)
             ret.append(result)
         return ret
-
-    def build_window_title_args(self, device_name: str, app_name: str):
-        # TODO: set window title as "<device_name> - <app_name>"
-        # --window-title=<title>
-        return ["--window-title", "%s - %s" % (device_name, app_name)]
 
     def set_device(self, device_id: str):
         self.device = device_id
@@ -926,6 +1378,9 @@ class ScrcpyWrapper:
         package_name: str,
         window_params: Dict = None,
         scrcpy_args: list[str] = None,
+        new_display=True,
+        title: str = None,
+        use_adb_keyboard=False,
     ):
         args = []
 
@@ -939,19 +1394,58 @@ class ScrcpyWrapper:
                     args.extend(["--window-%s=%s" % (it, window_params[it])])
                     configured_window_options.append("--window-%s" % it)
 
+        if new_display:
+            args.extend(["--new-display"])
+
+        if title:
+            args.extend(["--window-title", title])
+
         if scrcpy_args:
             for it in scrcpy_args:
                 if it.split("=")[0] not in configured_window_options:
                     args.append(it)
                 else:
                     print(
-                        "Warning: one of scrcpy options '%s' is already configured via window options"
-                        % it
+                        "Warning: one of scrcpy options '%s' is already configured" % it
                     )
 
         args.extend(["--start-app", package_name])
+        # reference: https://stackoverflow.com/questions/2804543/read-subprocess-stdout-line-by-line
 
-        self.execute_detached(args)
+        # self.execute_detached(args)
+        # self.execute(args)
+        unicode_char_warning = "[server] WARN: Could not inject char"
+        cmd = self._build_cmd(args)
+        proc = subprocess.Popen(
+            cmd, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True
+        )
+        # TODO: capture stdout for getting new display id
+        for line in proc.stderr:
+            captured_line = line.strip()
+            if self.config.verbose:
+                ...
+            print(
+                "<scrcpy stderr> %s" % captured_line
+            )  # now we check if this indicates some character we need to type in
+            if captured_line.startswith(unicode_char_warning):
+                char_repr = captured_line[len(unicode_char_warning) :].strip()
+                char_str = convert_unicode_escape(char_repr)
+                # TODO: use clipboard set and paste instead
+                # TODO: make unicode_input_method a text based config, opening the main display to show the default input method interface when no clipboard input or adb keyboard is enabled
+                # TODO: hover the main display on the focused new window to show input candidates, or use gboard
+                if use_adb_keyboard:
+                    self.adb_wrapper.adb_keyboard_input_text(char_str)
+                else:
+                    self.clipboard_paste_input_text(char_str)
+            # [server] WARN: Could not inject char u+4f60
+            # TODO: use adb keyboard for pasting text from clipboard
+
+    def clipboard_paste_input_text(self, text: str):
+        pyperclip.copy(text)
+        if platform.system() == "Darwin":
+            pyautogui.hotkey("command", "v")
+        else:
+            pyautogui.hotkey("ctrl", "v")
 
 
 class FzfWrapper:
@@ -980,20 +1474,27 @@ def create_default_config(cache_dir: str) -> omegaconf.DictConfig:
     return omegaconf.OmegaConf.create(
         {
             "cache_dir": cache_dir,
-            "device": None,
+            "device": None,  # TODO: not storing this value here, but upsert it to local tinydb
             "zoom_factor": 1.0,
             "db_path": os.path.join(cache_dir, "apps.db"),
             "session_autosave": True,
             "android_session_storage_path": "/sdcard/.swm",
+            "app_list_cache_update_interval": 60 * 60 * 24,  # 1 day
+            "session_autosave_interval": 60 * 60,  # 1 hour
+            "app_list_cache_path": os.path.join(cache_dir, "app_list_cache.json"),
             "github_mirrors": [
                 "https://github.com",
                 "https://bgithub.xyz",
                 "https://kgithub.com",
             ],
+            "use_shared_app_config": True,
             "binaries": {
                 "adb": {"version": "1.0.41"},
                 "scrcpy": {"version": "2.0"},
                 "fzf": {"version": "0.42.0"},
+                "adbkeyboard": {"version": "1.0.0"},
+                "beeshell": {"version": "1.0.0"},
+                "aapt": {"version": "1.0.0"},
             },
         }
     )
@@ -1070,12 +1571,17 @@ def main():
     if verbose:
         print("Verbose mode on. Showing diagnostic info:")
         print_diagnostic_info(program_specific_params)
-    override_system_excepthook(
-        program_specific_params=program_specific_params,
-        ignorable_exceptions=(
-            [] if debug else [NoDeviceError, NoSelectionError, NoBaseConfigError]
-        ),
-    )
+
+    if debug:
+        print(
+            "Debug mode on. Overriding system excepthook to capture unhandled exceptions."
+        )
+        override_system_excepthook(
+            program_specific_params=program_specific_params,
+            ignorable_exceptions=(
+                [] if verbose else [NoDeviceError, NoSelectionError, NoBaseConfigError]
+            ),
+        )
 
     config.verbose = verbose
     config.debug = debug
@@ -1109,7 +1615,7 @@ def main():
             print("\n".join(devices))
         elif args["search"]:
             device = swm.device_manager.search()
-            ans = input("Choose an option(select|name):")
+            ans = prompt_for_option_selection(["select", "name"], "Choose an option:")
             if ans.lower() == "select":
                 swm.device_manager.select(device)
             elif ans.lower() == "name":
@@ -1144,6 +1650,9 @@ def main():
 
         if args["app"]:
             if args["list"]:
+                update_cache = args[
+                    "latest"
+                ]  # cache previous list result (alias, id), but last_used_time is always up-to-date
                 apps = swm.app_manager.list(
                     print_formatted=True,
                     additional_fields=dict(
@@ -1162,7 +1671,9 @@ def main():
                     scrcpy_args = input("Application arguments:")
                     swm.app_manager.run(app_id, scrcpy_args)
                 elif ans.lower() == "config":
-                    opt = input("Please choose an option (edit|show)")
+                    opt = prompt_for_option_selection(
+                        ["edit", "show"], "Please choose an option:"
+                    )
                     if opt == "edit":
                         swm.app_manager.edit_app_config(app_id)
                     elif opt == "show":
@@ -1172,10 +1683,20 @@ def main():
                     most_used=args.get("<count>", 10), print_formatted=True
                 )
             elif args["run"]:
-                swm.app_manager.run(args["<app_name>"], args["<scrcpy_args>"])
+                no_new_display = args["no-new-display"]
+                query = args["<query>"]
+                app_id = query
+                # TODO: search with query instead
+                # app_id = swm.app_manager.resolve_app_query(query)
+                swm.app_manager.run(
+                    app_id,
+                    args["<scrcpy_args>"],
+                    new_display=not no_new_display,
+                )
 
             elif args["config"]:
-                app_name = args["<app_name>"]
+                query = args["<query>"]
+                app_name = swm.app_manager.resolve_app_query(query)
                 if args["show"]:
                     swm.app_manager.show_app_config(app_name)
                 elif args["edit"]:
@@ -1187,7 +1708,9 @@ def main():
                 print("\n".join(sessions))
             elif args["search"]:
                 session_name = swm.session_manager.search()
-                opt = input("Please specify an action (restore|delete)")
+                opt = prompt_for_option_selection(
+                    ["restore", "delete"], "Please specify an action:"
+                )
                 if opt == "restore":
                     swm.session_manager.restore(session_name)
                 elif opt == "delete":
@@ -1197,11 +1720,17 @@ def main():
                 swm.session_manager.save(args["<session_name>"])
 
             elif args["restore"]:
-                session_name = args.get("<session_name>", "default")
+                query = args["<query>"]
+                if query is None:
+                    query = "default"
+                session_name = swm.session_manager.resolve_session_query(query)
                 swm.session_manager.restore(session_name)
 
             elif args["delete"]:
-                swm.session_manager.delete(args["<session_name>"])
+                session_name = swm.session_manager.resolve_session_query(
+                    args["<query>"]
+                )
+                swm.session_manager.delete(session_name)
             else:
                 ...  # Implement other device specific commands
 
