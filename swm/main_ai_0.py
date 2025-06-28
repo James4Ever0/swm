@@ -5,16 +5,20 @@ Usage:
   swm [options] scrcpy [<scrcpy_args>...]
   swm [options] app run <app_name> [<scrcpy_args>...]
   swm [options] app list [last_used] [type]
-  swm [options] app search [type]
+  swm [options] app search [type] [index]
   swm [options] app most-used [<count>]
+  swm [options] app config show-default
   swm [options] app config <app_name> (show|edit)
-  swm [options] session (list|search)
+  swm [options] session list [last_used]
+  swm [options] session search [index]
   swm [options] session restore [session_name]
   swm [options] session (save|delete) <session_name>
-  swm [options] device (list|search)
+  swm [options] device list [last_used]
+  swm [options] device search [index]
   swm [options] device select <device_id>
   swm [options] device name <device_id> <device_alias>
   swm [options] baseconfig show [diagnostic]
+  swm [options] baseconfig show-default
   swm [options] baseconfig edit
   swm --version
   swm --help
@@ -59,8 +63,48 @@ __version__ = "0.1.0"
 class NoDeviceError(ValueError): ...
 
 
+class NoSelectionError(ValueError): ...
+
+
+class NoConfigError(ValueError): ...
+
+
+class NoBaseConfigError(ValueError): ...
+
+
+class NoDeviceConfigError(ValueError): ...
+
+
+class NoDeviceAliasError(ValueError): ...
+
+
+class NoDeviceNameError(ValueError): ...
+
+
+class NoDeviceIdError(ValueError): ...
+
+
+def prompt_for_option_selection(
+    options: List[str], prompt: str = "Select an option: "
+) -> str:
+    while True:
+        print(prompt)
+        for i, option in enumerate(options):
+            print(f"{i + 1}. {option}")
+        try:
+            selection = int(input("Enter your choice: "))
+            if 1 <= selection <= len(options):
+                return options[selection - 1]
+        except ValueError:
+            pass
+
+
 def reverse_text(text):
     return "".join(reversed(text))
+
+
+def spawn_and_detach_process(cmd: List[str]):
+    return subprocess.Popen(cmd, start_new_session=True)
 
 
 def parse_scrcpy_app_list_output_single_line(text: str):
@@ -363,7 +407,7 @@ class SWM:
         return self.adb_wrapper.get_device_architecture()
 
     def infer_current_device(self, default_device: str):
-        all_devices = self.adb_wrapper.list_devices()
+        all_devices = self.adb_wrapper.list_device_ids()
         if len(all_devices) == 0:
             # no devices.
             print("No device is online")
@@ -387,16 +431,32 @@ class SWM:
                     "Device selected by config (%s) is not online, please select one."
                     % default_device
                 )
-                prompt_for_device = f"Select a device from {all_devices}: "
+                prompt_for_device = f"Select a device from: "
                 # TODO: input numbers or else
                 # TODO: show detailed info per device, such as device type, last swm use time, alias, device model, android info, etc...
-                while True:
-                    selected_device = input(prompt_for_device)
-                    if selected_device in all_devices:
-                        print("Selecting device:", selected_device)
-                        return selected_device
-                    else:
-                        print("Invalid device selected, please try again.")
+                selected_device = prompt_for_option_selection(
+                    all_devices, prompt_for_device
+                )
+                return selected_device
+
+
+def load_and_print_as_dataframe(
+    list_of_dict, additional_fields={}, show=True, sort_columns=True
+):
+
+    df = pandas.DataFrame(list_of_dict)
+    if sort_columns:
+        sorted_columns = sorted(df.columns)
+
+        # Reindex the DataFrame with the sorted column order
+        df = df[sorted_columns]
+    for key, value in additional_fields.items():
+        if value is False:
+            df.drop(key, axis=1, inplace=True)
+    formatted_output = df.to_string(index=False)
+    if show:
+        print(formatted_output)
+    return formatted_output
 
 
 class AppManager:
@@ -415,28 +475,51 @@ class AppManager:
         )
         return last_used_time
 
-    def search(self):
+    def search(self, index: bool):
         apps = self.list()
-        return self.swm.fzf_wrapper.select_item(apps)
+        items = []
+        for i, it in enumerate(apps):
+            line = f"{it['alias']}\t{it['id']}"
+            if index:
+                line = f"[{i+1}]\t{line}"
+            items.append(line)
+        selected = self.swm.fzf_wrapper.select_item(items)
+        if selected:
+            package_id = selected.split("\t")[-1]
+            return package_id
+        else:
+            return None
 
-    def list(self, most_used: Optional[int] = None, print_formatted: bool = False):
+    def list(
+        self,
+        most_used: Optional[int] = None,
+        print_formatted: bool = False,
+        additional_fields: dict = {},
+    ):
         if most_used:
             apps = self.list_most_used_apps(most_used)
         else:
             apps = self.list_all_apps()
 
         if print_formatted:
-            df = pandas.DataFrame(apps)
-            print(df.to_string(index=False))
+            load_and_print_as_dataframe(apps, additional_fields=additional_fields)
 
         return apps
 
+    def install_and_use_adb_keyboard(self): ...
+
+    def retrieve_app_icon(self, package_id: str): ...
+
     def run(self, app_name: str, scrcpy_args: List[str] = None):
         # TODO: memorize the last scrcpy run args, by default in swm config
-
         # Get app config
-        app_config = self.get_app_config(app_name)
-
+        env = {}
+        app_config = self.get_or_create_app_config(app_name)
+        if app_config.get("use_adb_keyboard", False):
+            self.install_and_use_adb_keyboard()
+        if app_config.get("retrieve_app_icon", False):
+            icon_path = self.retrieve_app_icon(app_name)
+            env["SCRCPY_ICON_PATH"] = icon_path
         # Add window config if exists
         win = app_config.get("window", None)
 
@@ -486,7 +569,8 @@ class AppManager:
 
 # arguments passed to scrcpy
 scrcpy_args: []
-
+use_adb_keyboard: true
+retrieve_app_icon: true
 """
 
     def save_app_config(self, app_name: str, config: Dict):
@@ -494,7 +578,7 @@ scrcpy_args: []
         with open(app_config_path, "w") as f:
             yaml.safe_dump(config, f)
 
-    def list_all_apps(self) -> List[str]:
+    def list_all_apps(self) -> List[dict[str, str]]:
         # package_ids = self.swm.adb_wrapper.list_packages()
         package_list = self.swm.scrcpy_wrapper.list_package_id_and_alias()
         for it in package_list:
@@ -506,7 +590,7 @@ scrcpy_args: []
                 it["last_used_time"] = -1
         return package_list
 
-    def list_most_used_apps(self, limit: int) -> List[str]:
+    def list_most_used_apps(self, limit: int) -> List[dict[str, str]]:
         # Placeholder implementation
         all_apps = self.list_all_apps()
         all_apps.sort(key=lambda x: -x["last_used_time"])
@@ -571,31 +655,27 @@ class SessionManager:
 class DeviceManager:
     def __init__(self, swm: SWM):
         self.swm = swm
-        self.devices_file = os.path.join(swm.cache_dir, "devices.json")
-        self.devices = self._load_devices()
 
-    def list(self) -> List[str]:
-        return list(self.devices.keys())
+    def list(self, print_formatted):
+        ret = self.swm.adb_wrapper.devices()
+        if print_formatted:
+            load_and_print_as_dataframe(ret)
+        return ret
+        # TODO: use adb to get device name:
+        # adb shell settings get global device_name
+        # adb shell getprop net.hostname
+        # set device name:
+        # adb shell settings put global device_name "NEW_NAME"
+        # adb shell settings setprop net.hostname "NEW_NAME"
 
     def search(self):
         return self.swm.fzf_wrapper.select_item(self.list())
 
-    def select(self, device_id: str):
+    def select(self, device_id: int):
         self.swm.set_current_device(device_id)
 
     def name(self, device_id: str, alias: str):
-        self.devices[alias] = device_id
-        self._save_devices()
-
-    def _load_devices(self) -> Dict:
-        if os.path.exists(self.devices_file):
-            with open(self.devices_file, "r") as f:
-                return json.load(f)
-        return {}
-
-    def _save_devices(self):
-        with open(self.devices_file, "w") as f:
-            json.dump(self.devices, f, indent=2)
+        self.swm.adb_wrapper.set_device_name(device_id, alias)
 
 
 class AdbWrapper:
@@ -606,8 +686,22 @@ class AdbWrapper:
 
         self.initialize()
 
+    def get_device_name(self, device_id):
+        # self.set_device(device_id)
+        output = self.check_output(
+            ["shell", "settings", "get", "global", "device_name"], device_id=device_id
+        ).strip()
+        return output
+
+    def set_device_name(self, device_id, name):
+        # self.set_device(device_id)
+        self.execute(
+            ["shell", "settings", "put", "global", "device_name", "name"],
+            device_id=device_id,
+        )
+
     def online(self):
-        return self.device in self.list_devices()
+        return self.device in self.list_device_ids()
 
     def create_file_if_not_exists(self, remote_path: str):
         if not self.test_path_existance(remote_path):
@@ -633,22 +727,29 @@ class AdbWrapper:
         self.device = device_id
         self.initialize()
 
-    def _build_cmd(self, args: List[str]) -> List[str]:
+    def _build_cmd(self, args: List[str], device_id=None) -> List[str]:
         cmd = [self.adb_path]
-        if self.device:
+        if device_id:
+            cmd.extend(["-s", device_id])
+        elif self.device:
             cmd.extend(["-s", self.device])
         cmd.extend(args)
         return cmd
 
     def execute(
-        self, args: List[str], capture: bool = False, text=True, check=True
+        self,
+        args: List[str],
+        capture: bool = False,
+        text=True,
+        check=True,
+        device_id=None,
     ) -> subprocess.CompletedProcess:
-        cmd = self._build_cmd(args)
+        cmd = self._build_cmd(args, device_id)
         result = subprocess.run(cmd, capture_output=capture, text=text, check=check)
         return result
 
-    def check_output(self, args: List[str]) -> str:
-        return self.execute(args, capture=True).stdout.strip()
+    def check_output(self, args: List[str], device_id=None) -> str:
+        return self.execute(args, capture=True, device_id=device_id).stdout.strip()
 
     def read_file(self, remote_path: str) -> str:
         """Read a remote file's content as a string."""
@@ -697,7 +798,10 @@ class AdbWrapper:
     def get_device_architecture(self) -> str:
         return self.check_output(["shell", "getprop", "ro.product.cpu.abi"])
 
-    def list_devices(self) -> List[str]:
+    def list_device_ids(
+        self, skip_unauthorized: bool = True, with_status: bool = False
+    ) -> List[str]:
+
         # TODO: detect and filter unauthorized and abnormal devices
         output = self.check_output(["devices"])
         devices = []
@@ -706,11 +810,22 @@ class AdbWrapper:
                 elements = line.split()
                 device_id = elements[0]
                 device_status = elements[1]
-                if device_status != "unauthorized":
-                    devices.append(device_id)
+                if not skip_unauthorized or device_status != "unauthorized":
+                    if with_status:
+                        devices.append({"id": device_id, "status": device_status})
+                    else:
+                        devices.append(device_id)
                 else:
                     print("Warning: device %s unauthorized thus skipped" % device_id)
         return devices
+
+    def list_device_detailed(self) -> List[str]:
+        device_infos = self.list_device_ids(with_status=True)
+        for it in device_infos:
+            device_id = it["id"]
+            device_name = self.get_device_name(device_id)
+            it["name"] = device_name
+        return device_infos
 
     def list_packages(self) -> List[str]:
         output = self.check_output(["shell", "pm", "list", "packages"])
@@ -797,6 +912,10 @@ class ScrcpyWrapper:
         cmd = self._build_cmd(args)
         subprocess.run(cmd, check=True)
 
+    def execute_detached(self, args: List[str]):
+        cmd = self._build_cmd(args)
+        spawn_and_detach_process(cmd)
+
     def check_output(self, args: List[str]) -> str:
         cmd = self._build_cmd(args)
         output = subprocess.check_output(cmd).decode("utf-8")
@@ -832,7 +951,7 @@ class ScrcpyWrapper:
 
         args.extend(["--start-app", package_name])
 
-        self.execute(args)
+        self.execute_detached(args)
 
 
 class FzfWrapper:
@@ -844,14 +963,17 @@ class FzfWrapper:
             tmp.write("\n".join(items))
             tmp.flush()
 
-            cmd = [self.fzf_path, "--height", "40%", "--layout=reverse"]
+            cmd = [self.fzf_path, "--layout=reverse"]
             result = subprocess.run(
-                cmd, stdin=open(tmp.name, "r"), capture_output=True, text=True
+                cmd, stdin=open(tmp.name, "r"), stdout=subprocess.PIPE, text=True
             )
-
             if result.returncode == 0:
-                return result.stdout.strip()
-            return ""
+                ret = result.stdout.strip()
+            else:
+                print("Error: fzf exited with code %d" % result.returncode)
+                ret = ""
+            print("FZF selection:", ret)
+            return ret
 
 
 def create_default_config(cache_dir: str) -> omegaconf.DictConfig:
@@ -950,7 +1072,9 @@ def main():
         print_diagnostic_info(program_specific_params)
     override_system_excepthook(
         program_specific_params=program_specific_params,
-        ignorable_exceptions=[] if debug else [NoDeviceError],
+        ignorable_exceptions=(
+            [] if debug else [NoDeviceError, NoSelectionError, NoBaseConfigError]
+        ),
     )
 
     config.verbose = verbose
@@ -1020,19 +1144,29 @@ def main():
 
         if args["app"]:
             if args["list"]:
-                apps = swm.app_manager.list(print_formatted=True)
+                apps = swm.app_manager.list(
+                    print_formatted=True,
+                    additional_fields=dict(
+                        last_used_time=args["last_used"], type_symbol=args["type"]
+                    ),
+                )
             elif args["search"]:
-                app = swm.app_manager.search()
-                ans = input("Please select an action (run|config):")
+                app_id = swm.app_manager.search(index=args["index"])
+                if app_id is None:
+                    raise NoSelectionError("No app has been selected")
+                print("Selected app: {}".format(app_id))
+                ans = prompt_for_option_selection(
+                    ["run", "config"], "Please select an action:"
+                )
                 if ans.lower() == "run":
                     scrcpy_args = input("Application arguments:")
-                    swm.app_manager.run(app, scrcpy_args)
+                    swm.app_manager.run(app_id, scrcpy_args)
                 elif ans.lower() == "config":
                     opt = input("Please choose an option (edit|show)")
                     if opt == "edit":
-                        swm.app_manager.edit_app_config(app_name)
+                        swm.app_manager.edit_app_config(app_id)
                     elif opt == "show":
-                        swm.app_manager.show_app_config(app_name)
+                        swm.app_manager.show_app_config(app_id)
             elif args["most-used"]:
                 swm.app_manager.list(
                     most_used=args.get("<count>", 10), print_formatted=True
@@ -1045,7 +1179,6 @@ def main():
                 if args["show"]:
                     swm.app_manager.show_app_config(app_name)
                 elif args["edit"]:
-                    # Implementation would open editor
                     swm.app_manager.edit_app_config(app_name)
 
         elif args["session"]:
