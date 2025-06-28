@@ -985,15 +985,18 @@ class AdbWrapper:
         self.initialize()
         self.remote = self
 
-    def get_active_displays(self):
-        # adb shell wm size -d <display_id>
+    # TODO: if app is not foreground, or is ime input target but has different display id, then we close the corresponding scrcpy window
+
+    def get_display_density(self, display_id):
         # adb shell wm density -d <display_id>
-        ...
-    
-    def get_active_display_ids(self):
-        # adb shell dumpsys display
-        # scrcpy --list-displays
-        ...
+        output = self.check_output(["shell", "wm", "density", "-d", display_id])
+
+    def get_display_current_focus(self):
+        # adb shell dumpsys window | grep "ime" | grep display
+        # adb shell dumpsys window displays | grep "mCurrentFocus"
+        output = self.check_output(["shell", "dumpsys", "window", "displays"])
+        # we can get display id and current focused app per display here
+        # just need to parse section "WINDOW MANAGER DISPLAY CONTENTS (dumpsys window displays)"
 
     def check_app_is_foreground(self, app_id):
         # convert the binary output from "wm dump-visible-window-views" into ascii byte by byte, those not viewable into "."
@@ -1001,7 +1004,7 @@ class AdbWrapper:
 
         # or use the readable output from dumpsys
         # adb shell "dumpsys activity activities | grep ResumedActivity" | grep <app_id>
-        ...
+        output = self.check_output(["shell", "dumpsys", "activity", "activities"])
 
     def check_app_existance(self, app_id):
         apk_path = self.get_app_apk_path(app_id)
@@ -1009,12 +1012,13 @@ class AdbWrapper:
             return True
         return False
 
-    def check_if_screen_unlocked(self): ...
-    # reference: https://stackoverflow.com/questions/35275828/is-there-a-way-to-check-if-android-device-screen-is-locked-via-adb
-    # adb shell dumpsys power | grep 'mHolding'
-    # If both are false, the display is off.
-    # If mHoldingWakeLockSuspendBlocker is false, and mHoldingDisplaySuspendBlocker is true, the display is on, but locked.
-    # If both are true, the display is on.
+    def check_if_screen_unlocked(self):
+        output = self.check_output(["shell", "dumpsys", "power"])
+        # reference: https://stackoverflow.com/questions/35275828/is-there-a-way-to-check-if-android-device-screen-is-locked-via-adb
+        # adb shell dumpsys power | grep 'mHolding'
+        # If both are false, the display is off.
+        # If mHoldingWakeLockSuspendBlocker is false, and mHoldingDisplaySuspendBlocker is true, the display is on, but locked.
+        # If both are true, the display is on.
 
     def adb_keyboard_input_text(self, text: str):
         # adb shell am broadcast -a ADB_INPUT_B64 --es msg `echo -n '你好' | base64`
@@ -1187,7 +1191,7 @@ class AdbWrapper:
         output = self.check_output(["shell", "pm", "path", app_id]).strip()
         if output:
             prefix = "package:"
-            apk_path = output[len(prefix):]
+            apk_path = output[len(prefix) :]
             return apk_path
 
     def extract_app_icon(self, app_apk_remote_path: str, icon_remote_dir: str):
@@ -1324,6 +1328,11 @@ class ScrcpyWrapper:
         self.config = config
         self.device = config.get("device")
         self.adb_wrapper = adb_wrapper
+
+    def get_active_display_ids(self):
+        # scrcpy --list-displays
+        output = self.check_output(["--list-displays"])
+        ...
 
     # TODO: use "scrcpy --list-apps" instead of using aapt to parse app labels
 
