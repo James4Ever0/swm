@@ -8,13 +8,15 @@ Usage:
   swm [options] app search [type] [index]
   swm [options] app most-used [<count>]
   swm [options] app config show-default
-  swm [options] app config (show|edit) <query>
-  swm [options] app config name <query> <template_name>
+  swm [options] app config (show|edit) <config_name>
+  swm [options] app config copy <source_name> <target_name>
   swm [options] session list [last_used]
   swm [options] session search [index]
-  swm [options] session restore [query]
+  swm [options] session restore [session_name]
   swm [options] session delete <query>
+  swm [options] session edit <query> 
   swm [options] session save <session_name>
+  swm [options] session copy <source> <target>
   swm [options] device list [last_used]
   swm [options] device search [index]
   swm [options] device select <query>
@@ -45,6 +47,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import signal
 import traceback
 import zipfile
 import base64
@@ -59,6 +62,7 @@ import requests
 import yaml
 from docopt import docopt
 from tinydb import Query, Storage, TinyDB
+from tinydb.table import Document
 
 __version__ = "0.1.0"
 
@@ -69,6 +73,14 @@ def convert_unicode_escape(input_str):
     # Convert hex string to integer and then to Unicode character
     return chr(int(hex_str, 16))
 
+def split_args(args_str:str):
+    splited_args= args_str.split()
+    ret = []
+    for it in splited_args:
+        it = it.strip()
+        if it:
+            ret.append(it)
+    return ret
 
 def encode_base64_str(data: str):
     encoded_bytes = base64.b64encode(data.encode("utf-8"))
@@ -197,7 +209,7 @@ def get_file_content(filepath: str):
         return f.read()
 
 
-def edit_or_open_file(filepath: str):
+def edit_or_open_file(filepath: str, return_value="edited"):
     print("Editing file:", filepath)
     content_before_edit = get_file_content(filepath)
     editor_binpath = select_editor()
@@ -206,10 +218,17 @@ def edit_or_open_file(filepath: str):
     else:
         open_file_with_default_application(filepath)
     content_after_edit = get_file_content(filepath)
-    if content_before_edit != content_after_edit:
+    edited = content_before_edit != content_after_edit
+    if edited:
         print("File has been edited.")
     else:
         print("File has not been edited.")
+    if return_value == "edited":
+        return edited
+    elif return_value == "content":
+        return content_after_edit
+    else:
+        raise ValueError("Unknown return value:", return_value)
 
 
 def open_file_with_default_application(filepath: str):
@@ -402,16 +421,18 @@ class SWMOnDeviceDatabase:
             (AppUsage.device_id == device_id) & (AppUsage.app_id == app_id),
         )
 
-    def get_app_last_used_time(self, device_id, app_id: str) -> datetime:
+    def get_app_last_used_time(self, device_id, app_id: str) -> Optional[datetime]:
         AppUsage = Query()
 
         # Search for matching document
         result = self._db.table("app_usage").get(
             (AppUsage.device_id == device_id) & (AppUsage.app_id == app_id)
         )
-
         # Return datetime object if found, None otherwise
-        return datetime.fromisoformat(result["last_used_time"]) if result else None
+
+        if result:
+            assert type(result) == Document
+            return datetime.fromisoformat(result["last_used_time"])
 
 
 class SWM:
@@ -524,11 +545,27 @@ class AppManager:
         self.swm = swm
         self.config = swm.config
 
+    def resolve_app_main_activity(self, app_id:str):
+        # adb shell cmd package resolve-activity --brief <PACKAGE_NAME> | tail -n 1
+        ...
+    
+    def start_app_in_given_display(self, app_id:str, display_id:int):
+        # adb shell am start --display <DISPLAY_ID> -n <PACKAGE/ACTIVITY>
+        ...
+
+    def resolve_app_query(self, query:str):
+        print("Warning: app query resolution not implemented")
+        return query
+    # let's mark it rooted device only.
+    # we get the package path, data path and get last modification date of these files
+    # or use java to access UsageStats
     def get_app_last_used_time_from_device(self):
-        last_used_time = self.swm.adb_wrapper.execute()
+        cmd = ""
+        last_used_time = self.swm.adb_wrapper.execute_su_cmd(cmd, capture=True)
         return last_used_time
 
     def get_app_last_used_time_from_db(self, package_id: str):
+        assert self.swm.on_device_db
         device_id = self.swm.current_device
         last_used_time = self.swm.on_device_db.get_app_last_used_time(
             device_id, package_id
@@ -566,8 +603,11 @@ class AppManager:
 
         return apps
 
-    def install_and_use_adb_keyboard(self):
+    def install_and_use_adb_keyboard(self): # require root
+        # TODO: check root avalibility, decorate this method, if no root is found then raise exception
         self.swm.adb_wrapper.install_adb_keyboard()
+        self.swm.adb_wrapper.execute_su_cmd("ime enable com.android.adbkeyboard/.AdbIME")
+        self.swm.adb_wrapper.execute_su_cmd("ime set com.android.adbkeyboard/.AdbIME")
 
     def retrieve_app_icon(self, package_id: str, icon_path: str):
         self.swm.adb_wrapper.retrieve_app_icon(package_id, icon_path)
@@ -584,7 +624,7 @@ class AppManager:
     def check_app_existance(self, app_id):
         return self.swm.adb_wrapper.check_app_existance(app_id)
 
-    def run(self, app_id: str, scrcpy_args: List[str] = None, new_display: bool = True):
+    def run(self, app_id: str, scrcpy_args: Optional[List[str]] = None, new_display: bool = True):
 
         if not self.check_app_existance(app_id):
             raise NoAppError(
@@ -628,7 +668,9 @@ class AppManager:
         print(f"Editing config for {app_name}")
         app_config_path = self.get_app_config_path(app_name)
         self.get_or_create_app_config(app_name)
-        edit_or_open_file(app_config_path)
+        ret = edit_or_open_file(app_config_path)
+        assert type(ret) == bool
+        return ret
 
     def show_app_config(self, app_name: str):
         config = self.get_or_create_app_config(app_name)
@@ -696,13 +738,21 @@ class SessionManager:
     def __init__(self, swm: Any):
         self.swm = swm
         self.config = swm.config
-        self.session_dir = os.path.join(swm.cache_dir, "sessions")
-        os.makedirs(self.session_dir, exist_ok=True)
+        self.session_dir = os.path.join(
+            swm.config.android_session_storage_path, "sessions"
+        )  # remote path
+        self.swm.adb_wrapper.execute(
+            ["shell", "mkdir", "-p", self.session_dir], check=False
+        )
+
+    def resolve_session_query(self, query):
+        print("Warning: query resolution not implemented")
+        return query
 
     def get_swm_window_params(self) -> List[Dict[str, Any]]:
         windows = self.get_all_window_params()
         windows = [it for it in windows if it["title"].startswith("[SWM]")]
-        return
+        return windows
 
     def get_all_window_params(self) -> List[Dict[str, Any]]:
         os_type = platform.system()
@@ -912,7 +962,6 @@ class SessionManager:
         return sessions
 
     def save(self, session_name: str):
-        session_path = os.path.join(self.session_dir, f"{session_name}.json")
 
         # Get current window positions and app states
         session_data = {
@@ -921,17 +970,41 @@ class SessionManager:
             "windows": self._get_window_states(),
         }
 
-        with open(session_path, "w") as f:
-            json.dump(session_data, f, indent=2)
+        self._save_session_data(session_name, session_data)
+
+    def copy(self, source, target):
+        assert self.exists(source)
+        assert not self.exists(target)
+        sourcepath = self.get_session_path(source)
+        targetpath = self.get_session_path(target)
+        self.swm.adb_wrapper(["shell", "cp", sourcepath, targetpath])
+
+    def edit(self, session_name: str):
+        tmpfile = ...
+        session_path = self.get_session_path(session_name)
+        if self.exists(session_name):
+            tmpfile_content = self.swm.adb_wrapper.pull(session_wpath, tmpfile)
+        else:
+            tmpfile_content = self.template_session_config
+        content = edit_or_open_file(tmpfile, return_value="content")
+        self.swm.adb_wrapper.write_file(session_path, content)
+
+    def get_session_path(self, session_name):
+        session_path = os.path.join(self.session_dir, f"{session_name}.json")
+
+    def _save_session_data(self, session_name, session_data):
+        session_path = self.get_session_path(session_name)
+        content = json.dumps(session_data, f, indent=2)
+        self.swm.adb_wrapper.write_file(session_path, content)
 
     def restore(self, session_name: str):
         session_path = os.path.join(self.session_dir, f"{session_name}.json")
 
-        if not os.path.exists(session_path):
+        if not self.swm.adb_wrapper.test_path_existance(session_path):
             raise FileNotFoundError(f"Session not found: {session_name}")
 
-        with open(session_path, "r") as f:
-            session_data = json.load(f)
+        content = self.swm.adb_wrapper.read_file(session_path)
+        session_data = json.loads(content)
 
         # Restore each window
         for app_name, window_config in session_data["windows"].items():
@@ -1023,11 +1096,13 @@ class AdbWrapper:
     def adb_keyboard_input_text(self, text: str):
         # adb shell am broadcast -a ADB_INPUT_B64 --es msg `echo -n '你好' | base64`
         base64_text = encode_base64_str(text)
-        self.execute(
+        self.execute_shell(
             ["am", "broadcast", "-a", "ADB_INPUT_B64", "--es", "msg", base64_text]
         )
         # TODO: restore the previously using keyboard after swm being detached, either manually or using script/apk
         ...
+    def execute_shell(self, cmd_args:list[str], **kwargs):
+        self.execute(["shell", *cmd_args], **kwargs)
 
     def get_device_name(self, device_id):
         # self.set_device(device_id)
@@ -1038,8 +1113,7 @@ class AdbWrapper:
 
     def set_device_name(self, device_id, name):
         # self.set_device(device_id)
-        self.execute(
-            ["shell", "settings", "put", "global", "device_name", "name"],
+        self.execute_shell(["settings", "put", "global", "device_name", name],
             device_id=device_id,
         )
 
@@ -1133,14 +1207,14 @@ class AdbWrapper:
         apk_path = self.get_swm_apk_path("ADBKeyboard")
         self.install_apk(apk_path)
 
-    def execute_su_cmd(self, cmd: str):
-        self.execute(["shell", "su", "-c", cmd])
+    def execute_su_cmd(self, cmd: str, **kwargs):
+        self.execute(["shell", "su", "-c", cmd], **kwargs)
 
-    def execute_su_script(self, script: str):
+    def execute_su_script(self, script: str, **kwargs):
         tmpfile = "/sdcard/.swm/tmp.sh"
         self.write_file(tmpfile, script)
         cmd = "sh %s" % tmpfile
-        self.execute_su_cmd(cmd)
+        self.execute_su_cmd(cmd, **kwargs)
 
     def enable_adb_keyboard(self):
         self.execute(
@@ -1428,26 +1502,42 @@ class ScrcpyWrapper:
         proc = subprocess.Popen(
             cmd, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True
         )
+        proc_pid = proc.pid
+        assert proc.stderr
+        previous_ime = ...
         # TODO: capture stdout for getting new display id
-        for line in proc.stderr:
-            captured_line = line.strip()
-            if self.config.verbose:
-                ...
-            print(
-                "<scrcpy stderr> %s" % captured_line
-            )  # now we check if this indicates some character we need to type in
-            if captured_line.startswith(unicode_char_warning):
-                char_repr = captured_line[len(unicode_char_warning) :].strip()
-                char_str = convert_unicode_escape(char_repr)
-                # TODO: use clipboard set and paste instead
-                # TODO: make unicode_input_method a text based config, opening the main display to show the default input method interface when no clipboard input or adb keyboard is enabled
-                # TODO: hover the main display on the focused new window to show input candidates, or use gboard
-                if use_adb_keyboard:
-                    self.adb_wrapper.adb_keyboard_input_text(char_str)
-                else:
-                    self.clipboard_paste_input_text(char_str)
-            # [server] WARN: Could not inject char u+4f60
-            # TODO: use adb keyboard for pasting text from clipboard
+        # TODO: collect missing char into batches and execute once every 0.5 seconds
+        # TODO: restart the app in given display if exited (configure this behavior as an option "on_app_exit")
+        try:
+            for line in proc.stderr:
+                captured_line = line.strip()
+                if self.config.verbose:
+                    ...
+                print(
+                    "<scrcpy stderr> %s" % captured_line
+                )  # now we check if this indicates some character we need to type in
+                if captured_line.startswith(unicode_char_warning):
+                    char_repr = captured_line[len(unicode_char_warning) :].strip()
+                    char_str = convert_unicode_escape(char_repr)
+                    # TODO: use clipboard set and paste instead
+                    # TODO: make unicode_input_method a text based config, opening the main display to show the default input method interface when no clipboard input or adb keyboard is enabled
+                    # TODO: hover the main display on the focused new window to show input candidates
+                    # Note: gboard is useful for single display, but not good for multi display.
+                    if use_adb_keyboard:
+                        self.adb_wrapper.adb_keyboard_input_text(char_str)
+                    else:
+                        self.clipboard_paste_input_text(char_str)
+                # [server] WARN: Could not inject char u+4f60
+                # TODO: use adb keyboard for pasting text from clipboard
+        finally:
+            # TODO: close the app when the main process is closed
+            # kill by pid
+            os.kill(proc_pid, signal.SIGKILL)
+            proc.kill() 
+            # TODO: revert back to previously using ime, if no other opening swm window 
+            # if self.swm.check_no_other_swm_running():
+            # self.adb_wrapper.execute_su_cmd("ime enable %s" % previous_ime)
+
 
     def clipboard_paste_input_text(self, text: str):
         pyperclip.copy(text)
@@ -1620,8 +1710,7 @@ def main():
 
     elif args["device"]:
         if args["list"]:
-            devices = swm.device_manager.list()
-            print("\n".join(devices))
+            swm.device_manager.list(print_formatted=True)
         elif args["search"]:
             device = swm.device_manager.search()
             ans = prompt_for_option_selection(["select", "name"], "Choose an option:")
@@ -1678,6 +1767,7 @@ def main():
                 )
                 if ans.lower() == "run":
                     scrcpy_args = input("Application arguments:")
+                    scrcpy_args = split_args(scrcpy_args)
                     swm.app_manager.run(app_id, scrcpy_args)
                 elif ans.lower() == "config":
                     opt = prompt_for_option_selection(
@@ -1694,9 +1784,8 @@ def main():
             elif args["run"]:
                 no_new_display = args["no-new-display"]
                 query = args["<query>"]
-                app_id = query
                 # TODO: search with query instead
-                # app_id = swm.app_manager.resolve_app_query(query)
+                app_id = swm.app_manager.resolve_app_query(query)
                 swm.app_manager.run(
                     app_id,
                     args["<scrcpy_args>"],
@@ -1704,12 +1793,11 @@ def main():
                 )
 
             elif args["config"]:
-                query = args["<query>"]
-                app_name = swm.app_manager.resolve_app_query(query)
+                config_name = args["<config_name>"]
                 if args["show"]:
-                    swm.app_manager.show_app_config(app_name)
+                    swm.app_manager.show_app_config(config_name)
                 elif args["edit"]:
-                    swm.app_manager.edit_app_config(app_name)
+                    swm.app_manager.edit_app_config(config_name)
 
         elif args["session"]:
             if args["list"]:
