@@ -14,7 +14,7 @@ Usage:
   swm [options] session search [index]
   swm [options] session restore [session_name]
   swm [options] session delete <query>
-  swm [options] session edit <query> 
+  swm [options] session edit <query>
   swm [options] session save <session_name>
   swm [options] session copy <source> <target>
   swm [options] device list [last_used]
@@ -73,14 +73,16 @@ def convert_unicode_escape(input_str):
     # Convert hex string to integer and then to Unicode character
     return chr(int(hex_str, 16))
 
-def split_args(args_str:str):
-    splited_args= args_str.split()
+
+def split_args(args_str: str):
+    splited_args = args_str.split()
     ret = []
     for it in splited_args:
         it = it.strip()
         if it:
             ret.append(it)
     return ret
+
 
 def encode_base64_str(data: str):
     encoded_bytes = base64.b64encode(data.encode("utf-8"))
@@ -545,17 +547,18 @@ class AppManager:
         self.swm = swm
         self.config = swm.config
 
-    def resolve_app_main_activity(self, app_id:str):
+    def resolve_app_main_activity(self, app_id: str):
         # adb shell cmd package resolve-activity --brief <PACKAGE_NAME> | tail -n 1
         ...
-    
-    def start_app_in_given_display(self, app_id:str, display_id:int):
+
+    def start_app_in_given_display(self, app_id: str, display_id: int):
         # adb shell am start --display <DISPLAY_ID> -n <PACKAGE/ACTIVITY>
         ...
 
-    def resolve_app_query(self, query:str):
+    def resolve_app_query(self, query: str):
         print("Warning: app query resolution not implemented")
         return query
+
     # let's mark it rooted device only.
     # we get the package path, data path and get last modification date of these files
     # or use java to access UsageStats
@@ -603,10 +606,12 @@ class AppManager:
 
         return apps
 
-    def install_and_use_adb_keyboard(self): # require root
+    def install_and_use_adb_keyboard(self):  # require root
         # TODO: check root avalibility, decorate this method, if no root is found then raise exception
         self.swm.adb_wrapper.install_adb_keyboard()
-        self.swm.adb_wrapper.execute_su_cmd("ime enable com.android.adbkeyboard/.AdbIME")
+        self.swm.adb_wrapper.execute_su_cmd(
+            "ime enable com.android.adbkeyboard/.AdbIME"
+        )
         self.swm.adb_wrapper.execute_su_cmd("ime set com.android.adbkeyboard/.AdbIME")
 
     def retrieve_app_icon(self, package_id: str, icon_path: str):
@@ -624,7 +629,9 @@ class AppManager:
     def check_app_existance(self, app_id):
         return self.swm.adb_wrapper.check_app_existance(app_id)
 
-    def run(self, app_id: str, scrcpy_args: Optional[List[str]] = None, new_display: bool = True):
+    def run(
+        self, app_id: str, init_config: Optional[str] = None, new_display: bool = True
+    ):
 
         if not self.check_app_existance(app_id):
             raise NoAppError(
@@ -648,8 +655,10 @@ class AppManager:
         # Add window config if exists
         win = app_config.get("window", None)
 
-        if scrcpy_args is None:
-            scrcpy_args = app_config.get("scrcpy_args", None)
+        scrcpy_args = []
+
+        # if scrcpy_args is None:
+        #     scrcpy_args = app_config.get("scrcpy_args", None)
 
         title = self.build_window_title(app_id)
 
@@ -661,6 +670,7 @@ class AppManager:
             title=title,
             new_display=new_display,
             use_adb_keyboard=use_adb_keyboard,
+            env=env,
         )
 
     def edit_app_config(self, app_name: str) -> bool:
@@ -719,15 +729,15 @@ retrieve_app_icon: true
             package_id = it["id"]
             last_used_time = self.get_app_last_used_time_from_db(package_id)
             if last_used_time:
-                it["last_used_time"] = last_used_time
+                it["last_used_time"] = last_used_time.timestamp()
             else:
                 it["last_used_time"] = -1
         return package_list
 
-    def list_most_used_apps(self, limit: int) -> List[dict[str, str]]:
+    def list_most_used_apps(self, limit: int) -> List[dict[str, Any]]:
         # Placeholder implementation
         all_apps = self.list_all_apps()
-        all_apps.sort(key=lambda x: -x["last_used_time"])
+        all_apps.sort(key=lambda x: -x["last_used_time"]) # type: ignore
         selected_apps = all_apps[:limit]
         return selected_apps
 
@@ -735,8 +745,9 @@ retrieve_app_icon: true
 # TODO: manual specification instead of automatic
 # TODO: specify pc display size in session config
 class SessionManager:
-    def __init__(self, swm: Any):
+    def __init__(self, swm: SWM):
         self.swm = swm
+        self.adb_wrapper = swm.adb_wrapper
         self.config = swm.config
         self.session_dir = os.path.join(
             swm.config.android_session_storage_path, "sessions"
@@ -744,6 +755,10 @@ class SessionManager:
         self.swm.adb_wrapper.execute(
             ["shell", "mkdir", "-p", self.session_dir], check=False
         )
+
+    @property
+    def template_session_config(self):
+        return ""
 
     def resolve_session_query(self, query):
         print("Warning: query resolution not implemented")
@@ -972,29 +987,38 @@ class SessionManager:
 
         self._save_session_data(session_name, session_data)
 
+    def exists(self, session_name: str) -> bool:
+        session_path = self.get_session_path(session_name)
+        return self.adb_wrapper.test_path_existance(session_path)
+
     def copy(self, source, target):
-        assert self.exists(source)
-        assert not self.exists(target)
         sourcepath = self.get_session_path(source)
         targetpath = self.get_session_path(target)
-        self.swm.adb_wrapper(["shell", "cp", sourcepath, targetpath])
+        assert self.adb_wrapper.test_path_existance(sourcepath)
+        assert not self.adb_wrapper.test_path_existance(targetpath)
+        self.adb_wrapper.execute(["shell", "cp", sourcepath, targetpath])
 
     def edit(self, session_name: str):
-        tmpfile = ...
         session_path = self.get_session_path(session_name)
-        if self.exists(session_name):
-            tmpfile_content = self.swm.adb_wrapper.pull(session_wpath, tmpfile)
+        if self.adb_wrapper.test_path_existance(session_name):
+            tmpfile_content = self.adb_wrapper.read_file(session_path)
         else:
             tmpfile_content = self.template_session_config
-        content = edit_or_open_file(tmpfile, return_value="content")
-        self.swm.adb_wrapper.write_file(session_path, content)
+
+        with tempfile.NamedTemporaryFile(mode="w+") as tmpfile:
+            tmpfile.write(tmpfile_content)
+            tmpfile.flush()
+            edited_content = edit_or_open_file(tmpfile.name, return_value="content")
+            assert type(edited_content) == str
+            self.swm.adb_wrapper.write_file(session_path, edited_content)
 
     def get_session_path(self, session_name):
         session_path = os.path.join(self.session_dir, f"{session_name}.json")
+        return session_path
 
     def _save_session_data(self, session_name, session_data):
         session_path = self.get_session_path(session_name)
-        content = json.dumps(session_data, f, indent=2)
+        content = json.dumps(session_data, indent=2)
         self.swm.adb_wrapper.write_file(session_path, content)
 
     def restore(self, session_name: str):
@@ -1028,7 +1052,7 @@ class DeviceManager:
         self.swm = swm
 
     def list(self, print_formatted):
-        ret = self.swm.adb_wrapper.devices()
+        ret = self.swm.adb_wrapper.list_device_detailed()
         if print_formatted:
             load_and_print_as_dataframe(ret)
         return ret
@@ -1040,9 +1064,9 @@ class DeviceManager:
         # adb shell settings setprop net.hostname "NEW_NAME"
 
     def search(self):
-        return self.swm.fzf_wrapper.select_item(self.list())
+        return self.swm.fzf_wrapper.select_item(self.list(print_formatted=False))
 
-    def select(self, device_id: int):
+    def select(self, device_id: str):
         self.swm.set_current_device(device_id)
 
     def name(self, device_id: str, alias: str):
@@ -1057,6 +1081,26 @@ class AdbWrapper:
         self.remote_swm_dir = self.config.android_session_storage_path
         self.initialize()
         self.remote = self
+
+    def check_has_root(self):
+        return self.execute_su_cmd("whoami", check=False).returncode == 0
+
+    def get_current_ime(self):
+        # does not require su, but anyway we just use su
+        output = self.check_output_su("settings get secure default_input_method")
+        return output
+
+    def list_active_imes(self):
+        return self.check_output_su("ime list -s").splitlines()
+
+    def set_current_ime(self, ime_name):
+        self.execute_su_cmd(f"settings put secure default_input_method {ime_name}")
+
+    def check_output_su(self, cmd: str, **kwargs):
+        return self.check_output(["su", "-c", cmd], **kwargs)
+
+    def check_output_shell(self, cmd_args: list[str], **kwargs):
+        return self.check_output(["shell"] + cmd_args, **kwargs)
 
     # TODO: if app is not foreground, or is ime input target but has different display id, then we close the corresponding scrcpy window
 
@@ -1101,7 +1145,8 @@ class AdbWrapper:
         )
         # TODO: restore the previously using keyboard after swm being detached, either manually or using script/apk
         ...
-    def execute_shell(self, cmd_args:list[str], **kwargs):
+
+    def execute_shell(self, cmd_args: list[str], **kwargs):
         self.execute(["shell", *cmd_args], **kwargs)
 
     def get_device_name(self, device_id):
@@ -1113,7 +1158,8 @@ class AdbWrapper:
 
     def set_device_name(self, device_id, name):
         # self.set_device(device_id)
-        self.execute_shell(["settings", "put", "global", "device_name", name],
+        self.execute_shell(
+            ["settings", "put", "global", "device_name", name],
             device_id=device_id,
         )
 
@@ -1208,13 +1254,13 @@ class AdbWrapper:
         self.install_apk(apk_path)
 
     def execute_su_cmd(self, cmd: str, **kwargs):
-        self.execute(["shell", "su", "-c", cmd], **kwargs)
+        return self.execute(["shell", "su", "-c", cmd], **kwargs)
 
     def execute_su_script(self, script: str, **kwargs):
         tmpfile = "/sdcard/.swm/tmp.sh"
         self.write_file(tmpfile, script)
         cmd = "sh %s" % tmpfile
-        self.execute_su_cmd(cmd, **kwargs)
+        return self.execute_su_cmd(cmd, **kwargs)
 
     def enable_adb_keyboard(self):
         self.execute(
@@ -1269,15 +1315,18 @@ class AdbWrapper:
             return apk_path
 
     def extract_app_icon(self, app_apk_remote_path: str, icon_remote_dir: str):
-        extracted_icon_remote_path = ...
+        zip_icon_path = ""
+        extracted_icon_remote_path = os.path.join(icon_remote_dir, zip_icon_path)
+        self.execute_shell(["unzip", app_apk_remote_path, "-d", icon_remote_dir, zip_icon_path])
         return extracted_icon_remote_path
 
-    def retrieve_app_icon(self, app_id: str, icon_path: str):
+    def retrieve_app_icon(self, app_id: str, local_icon_path: str):
         remote_icon_png_path = f"/sdcard/.swm/icons/{app_id}_icon.png"
         tmpdir = "/sdcard/.swm/tmp"
         if not self.test_path_existance(remote_icon_png_path):
             aapt_bin_path = self.install_aapt_binary()
             apk_remote_path = self.get_app_apk_path(app_id)
+            assert apk_remote_path, f"cannot find apk path for {app_id}"
             icon_remote_dir = tmpdir
             icon_remote_raw_path = self.extract_app_icon(
                 apk_remote_path, icon_remote_dir
@@ -1294,6 +1343,7 @@ class AdbWrapper:
             else:
                 raise Exception("Unknown icon format %s" % icon_format)
             self.remove_dir(tmpdir, confirm=False)
+        self.pull_file(remote_icon_png_path, local_icon_path)
 
     def convert_icon_xml_to_png(self, icon_xml_path, icon_png_path):
         java_code = f"""input_icon_path = "{icon_xml_path}"
@@ -1308,7 +1358,7 @@ output_icon_path = "{png_path}"
         self.execute_java_code(java_code)
 
     def copy_file(self, src_path, dst_path):
-        self.execute(["cp", src_path, dst_path])
+        self.execute_shell(["cp", src_path, dst_path])
 
     def remove_dir(self, dir_path, confirm=True):
         if confirm:
@@ -1332,7 +1382,7 @@ output_icon_path = "{png_path}"
 
     def list_device_ids(
         self, skip_unauthorized: bool = True, with_status: bool = False
-    ) -> List[str]:
+    ) -> List:
 
         # TODO: detect and filter unauthorized and abnormal devices
         output = self.check_output(["devices"])
@@ -1377,7 +1427,7 @@ output_icon_path = "{png_path}"
     def create_dirs(self, dirpath: str):
         self.execute(["shell", "mkdir", "-p", dirpath])
 
-    def push_aapt(self, device_path: str = None):
+    def push_aapt(self, device_path: Optional[str] = None):
         if device_path is None:
             device_path = os.path.join(self.config.android_session_storage_path, "aapt")
         device_architecture = self.get_device_architecture()
@@ -1464,6 +1514,7 @@ class ScrcpyWrapper:
         new_display=True,
         title: str = None,
         use_adb_keyboard=False,
+        env={},
     ):
         args = []
 
@@ -1500,11 +1551,11 @@ class ScrcpyWrapper:
         unicode_char_warning = "[server] WARN: Could not inject char"
         cmd = self._build_cmd(args)
         proc = subprocess.Popen(
-            cmd, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True
+            cmd, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True, env=env
         )
         proc_pid = proc.pid
         assert proc.stderr
-        previous_ime = ...
+        previous_ime = self.adb_wrapper.get_current_ime()
         # TODO: capture stdout for getting new display id
         # TODO: collect missing char into batches and execute once every 0.5 seconds
         # TODO: restart the app in given display if exited (configure this behavior as an option "on_app_exit")
@@ -1533,11 +1584,10 @@ class ScrcpyWrapper:
             # TODO: close the app when the main process is closed
             # kill by pid
             os.kill(proc_pid, signal.SIGKILL)
-            proc.kill() 
-            # TODO: revert back to previously using ime, if no other opening swm window 
+            proc.kill()
+            # TODO: revert back to previously using ime, if no other opening swm window
             # if self.swm.check_no_other_swm_running():
             # self.adb_wrapper.execute_su_cmd("ime enable %s" % previous_ime)
-
 
     def clipboard_paste_input_text(self, text: str):
         pyperclip.copy(text)
@@ -1766,9 +1816,13 @@ def main():
                     ["run", "config"], "Please select an action:"
                 )
                 if ans.lower() == "run":
-                    scrcpy_args = input("Application arguments:")
-                    scrcpy_args = split_args(scrcpy_args)
-                    swm.app_manager.run(app_id, scrcpy_args)
+                    init_config = input("Initial config name:")
+                    run_in_new_display = input("Run in new display? (y/n, default: y):")
+                    if run_in_new_display.lower() == "n":
+                        no_new_display=True
+                    else:
+                        no_new_display=False
+                    swm.app_manager.run(app_id, init_config=init_config)
                 elif ans.lower() == "config":
                     opt = prompt_for_option_selection(
                         ["edit", "show"], "Please choose an option:"
@@ -1784,11 +1838,12 @@ def main():
             elif args["run"]:
                 no_new_display = args["no-new-display"]
                 query = args["<query>"]
+                init_config = args["<init_config>"]
                 # TODO: search with query instead
                 app_id = swm.app_manager.resolve_app_query(query)
                 swm.app_manager.run(
                     app_id,
-                    args["<scrcpy_args>"],
+                    init_config=init_config,
                     new_display=not no_new_display,
                 )
 
