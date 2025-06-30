@@ -594,12 +594,14 @@ class AppManager:
         self,
         most_used: Optional[int] = None,
         print_formatted: bool = False,
+        update_cache=False,
         additional_fields: dict = {},
     ):
+
         if most_used:
-            apps = self.list_most_used_apps(most_used)
+            apps = self.list_most_used_apps(most_used, update_cache=update_cache)
         else:
-            apps = self.list_all_apps()
+            apps = self.list_all_apps(update_cache=update_cache)
 
         if print_formatted:
             load_and_print_as_dataframe(apps, additional_fields=additional_fields)
@@ -722,9 +724,16 @@ retrieve_app_icon: true
         with open(app_config_path, "w") as f:
             yaml.safe_dump(config, f)
 
-    def list_all_apps(self) -> List[dict[str, str]]:
+    def list_all_apps(self, update_cache=False) -> List[dict[str, str]]:
         # package_ids = self.swm.adb_wrapper.list_packages()
-        package_list = self.swm.scrcpy_wrapper.list_package_id_and_alias()
+        package_list, cache_expired = (
+            self.swm.scrcpy_wrapper.load_package_id_and_alias_cache()
+        )
+        if update_cache or cache_expired:
+            package_list = self.swm.scrcpy_wrapper.list_package_id_and_alias()
+            self.swm.scrcpy_wrapper.save_package_id_and_alias_cache(package_list)
+        assert type(package_list) == list
+
         for it in package_list:
             package_id = it["id"]
             last_used_time = self.get_app_last_used_time_from_db(package_id)
@@ -734,10 +743,12 @@ retrieve_app_icon: true
                 it["last_used_time"] = -1
         return package_list
 
-    def list_most_used_apps(self, limit: int) -> List[dict[str, Any]]:
+    def list_most_used_apps(
+        self, limit: int, update_cache=False
+    ) -> List[dict[str, Any]]:
         # Placeholder implementation
-        all_apps = self.list_all_apps()
-        all_apps.sort(key=lambda x: -x["last_used_time"]) # type: ignore
+        all_apps = self.list_all_apps(update_cache=update_cache)
+        all_apps.sort(key=lambda x: -x["last_used_time"])  # type: ignore
         selected_apps = all_apps[:limit]
         return selected_apps
 
@@ -1317,7 +1328,9 @@ class AdbWrapper:
     def extract_app_icon(self, app_apk_remote_path: str, icon_remote_dir: str):
         zip_icon_path = ""
         extracted_icon_remote_path = os.path.join(icon_remote_dir, zip_icon_path)
-        self.execute_shell(["unzip", app_apk_remote_path, "-d", icon_remote_dir, zip_icon_path])
+        self.execute_shell(
+            ["unzip", app_apk_remote_path, "-d", icon_remote_dir, zip_icon_path]
+        )
         return extracted_icon_remote_path
 
     def retrieve_app_icon(self, app_id: str, local_icon_path: str):
@@ -1453,9 +1466,35 @@ class ScrcpyWrapper:
         self.device = config.get("device")
         self.adb_wrapper = adb_wrapper
 
+    @property
+    def app_list_cache_path(self):
+        return os.path.join(
+            self.config.android_session_storage_path, "package_list_cache.json"
+        )
+
+    def load_package_id_and_alias_cache(self):
+        package_list = None
+        cache_expired = True
+        if self.adb_wrapper.test_path_existance(self.app_list_cache_path):
+            content = self.adb_wrapper.read_file(self.app_list_cache_path)
+            data = json.loads(content)
+            cache_save_time = data["cache_save_time"]
+            now = time.time()
+            cache_age = now - cache_save_time
+            if cache_age < self.config.app_list_cache_update_interval:
+                cache_expired = False
+                package_list = data["package_list"]
+        return package_list, cache_expired
+
+    def save_package_id_and_alias_cache(self, package_list):
+        data = {"package_list": package_list, "cache_save_time": time.time()}
+        content = json.dumps(data)
+        self.adb_wrapper.write_file(self.app_list_cache_path, content)
+
     def get_active_display_ids(self):
         # scrcpy --list-displays
         output = self.check_output(["--list-displays"])
+        output_lines = output.splitlines()
         ...
 
     # TODO: use "scrcpy --list-apps" instead of using aapt to parse app labels
@@ -1803,6 +1842,7 @@ def main():
                 ]  # cache previous list result (alias, id), but last_used_time is always up-to-date
                 apps = swm.app_manager.list(
                     print_formatted=True,
+                    update_cache=update_cache,
                     additional_fields=dict(
                         last_used_time=args["last_used"], type_symbol=args["type"]
                     ),
@@ -1819,9 +1859,9 @@ def main():
                     init_config = input("Initial config name:")
                     run_in_new_display = input("Run in new display? (y/n, default: y):")
                     if run_in_new_display.lower() == "n":
-                        no_new_display=True
+                        no_new_display = True
                     else:
-                        no_new_display=False
+                        no_new_display = False
                     swm.app_manager.run(app_id, init_config=init_config)
                 elif ans.lower() == "config":
                     opt = prompt_for_option_selection(
