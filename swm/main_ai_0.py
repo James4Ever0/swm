@@ -38,29 +38,15 @@ Options:
   --debug       Debug mode, capturing all exceptions.
 """
 
-import functools
-import json
+# TODO: only import package when needed
+
 import os
 import platform
-import shutil
 import subprocess
-import sys
-import tempfile
-import time
-import signal
-import traceback
-import zipfile
-import base64
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-import pyperclip
-import pyautogui
 import omegaconf
-import pandas
-import requests
-import yaml
-from docopt import docopt
 from tinydb import Query, Storage, TinyDB
 from tinydb.table import Document
 
@@ -85,6 +71,7 @@ def split_args(args_str: str):
 
 
 def encode_base64_str(data: str):
+    import base64
     encoded_bytes = base64.b64encode(data.encode("utf-8"))
     encoded_str = encoded_bytes.decode("utf-8")
     return encoded_str
@@ -185,6 +172,7 @@ def parse_scrcpy_app_list_output_single_line(text: str):
 
 
 def select_editor():
+    import shutil
     unix_editors = ["vim", "nano", "vi", "emacs"]
     windows_editors = ["notepad"]
     cross_platform_editors = ["code"]
@@ -234,6 +222,7 @@ def edit_or_open_file(filepath: str, return_value="edited"):
 
 
 def open_file_with_default_application(filepath: str):
+    import shutil
     system = platform.system()
     if system == "Darwin":  # macOS
         command = ["open", filepath]
@@ -254,6 +243,9 @@ def download_and_unzip(url, extract_dir):
         url (str): URL of the ZIP file to download.
         extract_dir (str): Directory path where contents will be extracted.
     """
+    import tempfile
+    import requests
+    import zipfile
     # Create extraction directory if it doesn't exist
     os.makedirs(extract_dir, exist_ok=True)
 
@@ -298,6 +290,7 @@ def collect_system_info_for_diagnostic():
 
 
 def pretty_print_json(obj):
+    import json
     return json.dumps(obj, ensure_ascii=False, indent=4)
 
 
@@ -321,6 +314,7 @@ def execute_subprogram(program_path, args):
 def search_or_obtain_binary_path_from_environmental_variable_or_download(
     cache_dir: str, bin_name: str
 ) -> str:
+    import shutil
     # Adjust binary name for platform
     bin_env_name = bin_name.upper()
     platform_specific_name = bin_name.lower()
@@ -378,6 +372,7 @@ class ADBStorage(Storage):
         self.read_cache = None
 
     def read(self):
+        import json
         try:
             if self.enable_read_cache:
                 if self.read_cache is None:
@@ -393,6 +388,7 @@ class ADBStorage(Storage):
             return None
 
     def write(self, data):
+        import json
         content = json.dumps(data)
         self.adb_wrapper.write_file(self.filename, content)
         if self.enable_read_cache:
@@ -404,6 +400,7 @@ class ADBStorage(Storage):
 
 class SWMOnDeviceDatabase:
     def __init__(self, db_path: str, adb_wrapper: "AdbWrapper"):
+        import functools
         self.db_path = db_path
         self.storage = functools.partial(ADBStorage, adb_wrapper=adb_wrapper)
         self._db = TinyDB(db_path, storage=self.storage)
@@ -526,6 +523,7 @@ class SWM:
 def load_and_print_as_dataframe(
     list_of_dict, additional_fields={}, show=True, sort_columns=True
 ):
+    import pandas
 
     df = pandas.DataFrame(list_of_dict)
     if sort_columns:
@@ -697,6 +695,7 @@ class AppManager:
         return app_config_path
 
     def get_or_create_app_config(self, app_name: str) -> Dict:
+        import yaml
         app_config_path = self.get_app_config_path(app_name)
 
         if not os.path.exists(app_config_path):
@@ -988,6 +987,7 @@ class SessionManager:
         return sessions
 
     def save(self, session_name: str):
+        import time
 
         # Get current window positions and app states
         session_data = {
@@ -1010,6 +1010,7 @@ class SessionManager:
         self.adb_wrapper.execute(["shell", "cp", sourcepath, targetpath])
 
     def edit(self, session_name: str):
+        import tempfile
         session_path = self.get_session_path(session_name)
         if self.adb_wrapper.test_path_existance(session_name):
             tmpfile_content = self.adb_wrapper.read_file(session_path)
@@ -1028,11 +1029,13 @@ class SessionManager:
         return session_path
 
     def _save_session_data(self, session_name, session_data):
+        import json
         session_path = self.get_session_path(session_name)
         content = json.dumps(session_data, indent=2)
         self.swm.adb_wrapper.write_file(session_path, content)
 
     def restore(self, session_name: str):
+        import json
         session_path = os.path.join(self.session_dir, f"{session_name}.json")
 
         if not self.swm.adb_wrapper.test_path_existance(session_path):
@@ -1227,6 +1230,7 @@ class AdbWrapper:
 
     def read_file(self, remote_path: str) -> str:
         """Read a remote file's content as a string."""
+        import tempfile
         with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
             tmp_path = tmp_file.name
         try:
@@ -1237,6 +1241,7 @@ class AdbWrapper:
             os.unlink(tmp_path)
 
     def write_file(self, remote_path: str, content: str):
+        import tempfile
         """Write a string to a remote file."""
         with tempfile.NamedTemporaryFile(mode="w", delete=False) as tmp_file:
             tmp_path = tmp_file.name
@@ -1473,6 +1478,8 @@ class ScrcpyWrapper:
         )
 
     def load_package_id_and_alias_cache(self):
+        import json
+        import time
         package_list = None
         cache_expired = True
         if self.adb_wrapper.test_path_existance(self.app_list_cache_path):
@@ -1487,6 +1494,8 @@ class ScrcpyWrapper:
         return package_list, cache_expired
 
     def save_package_id_and_alias_cache(self, package_list):
+        import json
+        import time
         data = {"package_list": package_list, "cache_save_time": time.time()}
         content = json.dumps(data)
         self.adb_wrapper.write_file(self.app_list_cache_path, content)
@@ -1495,8 +1504,19 @@ class ScrcpyWrapper:
         # scrcpy --list-displays
         output = self.check_output(["--list-displays"])
         output_lines = output.splitlines()
-        ...
-
+        ret = {}
+        for it in output_lines:
+            it = it.strip()
+             # we can only have size here, not dpi
+            if it.startswith("--display-id"):
+                display_id_part, size_part = it.split()
+                display_id = display_id_part.split("=")[-1]
+                display_id = int(display_id)
+                size_part = size_part.replace("(", "").replace(")", "")
+                x_size, y_size = size_part.split("x")
+                x_size, y_size = int(x_size), int(y_size)
+                ret[display_id] = dict(x=x_size, y=y_size)
+        return ret
     # TODO: use "scrcpy --list-apps" instead of using aapt to parse app labels
 
     def list_package_id_and_alias(self):
@@ -1555,6 +1575,7 @@ class ScrcpyWrapper:
         use_adb_keyboard=False,
         env={},
     ):
+        import signal
         args = []
 
         configured_window_options = []
@@ -1629,6 +1650,8 @@ class ScrcpyWrapper:
             # self.adb_wrapper.execute_su_cmd("ime enable %s" % previous_ime)
 
     def clipboard_paste_input_text(self, text: str):
+        import pyperclip
+        import pyautogui
         pyperclip.copy(text)
         if platform.system() == "Darwin":
             pyautogui.hotkey("command", "v")
@@ -1658,7 +1681,7 @@ class FzfWrapper:
             return ret
 
 
-def create_default_config(cache_dir: str) -> omegaconf.DictConfig:
+def create_default_config(cache_dir: str):
     return omegaconf.OmegaConf.create(
         {
             "cache_dir": cache_dir,
@@ -1708,6 +1731,8 @@ def load_or_create_config(cache_dir: str, config_path: str) -> omegaconf.DictCon
 def override_system_excepthook(
     program_specific_params: Dict, ignorable_exceptions: list
 ):
+    import sys
+    import traceback
     def custom_excepthook(exc_type, exc_value, exc_traceback):
         if exc_type not in ignorable_exceptions:
             traceback.print_exception(
@@ -1720,10 +1745,13 @@ def override_system_excepthook(
 
 
 def parse_args():
+    from docopt import docopt
+
     return docopt(__doc__, version=f"SWM {__version__}", options_first=True)
 
 
 def main():
+    import sys
     # Setup cache directory
     default_cache_dir = os.path.expanduser("~/.swm")
 
