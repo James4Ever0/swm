@@ -5,15 +5,26 @@
 <h1>Scrcpy Window Manager</h1>
 </div>
 
-distribute it as a python package, or compile it using nuitka
+## Use cases
 
-install:
+- Want to work but cannot put down your phone
+- Share data between PC and Android device
+- Bring your work wherever you go
+- Want to experience something like Samsung Dex but do not have a compatible device
+- A more ergonomic way of using your Android phone, especially for professional Android users
+- Boost productivity by multi-tasking on Android
+
+## Installation
+
+Using `pip`:
 
 ```bash
 pip install swm-android
 ```
 
-commandline help:
+Nuitka compiled binaries are underway.
+
+## Commandline
 
 ```
 SWM - Scrcpy Window Manager
