@@ -5,10 +5,11 @@ Usage:
   swm [options] adb [<adb_args>...]
   swm [options] scrcpy [<scrcpy_args>...]
   swm [options] app run <query> [no-new-display] [<init_config>]
-  swm [options] app list [last_used] [type] [latest]
-  swm [options] app search [type] [index]
+  swm [options] app list [with-last-used-time] [with-type] [update]
+  swm [options] app search [with-type] [index]
   swm [options] app most-used [<count>]
   swm [options] app config show-default
+  swm [options] app config list
   swm [options] app config (show|edit) <config_name>
   swm [options] app config copy <source_name> <target_name>
   swm [options] session list [last_used]
@@ -40,6 +41,16 @@ Options:
 """
 
 # TODO: only import package when needed
+# TODO: create a filelock or pid file to prevent multiple instances of the same app running
+# TODO: ask the user to "run anyway" when multiple instances of the same app are running
+
+# TODO: dynamically change the fps of scrcpy, only let the foreground one be full and others be 1 fps
+# TODO: use platform specific window session manager
+# TODO: run swm daemon at first invocation, monitoring window changes, fetch app list in the background, etc
+
+# TODO: globally install this package into the first folder with permission in PATH, or use other tools (actually, adding current binary folder to PATH is better than this, so warn user if not added to PATH)
+
+# TODO: show partial help instead of full help based on the command args given
 
 import os
 import platform
@@ -383,7 +394,7 @@ def execute_subprogram(program_path, args):
 
 
 def search_or_obtain_binary_path_from_environmental_variable_or_download(
-    cache_dir: str, bin_name: str, bin_type:str
+    cache_dir: str, bin_name: str, bin_type: str
 ) -> str:
     import shutil
 
@@ -410,11 +421,13 @@ def search_or_obtain_binary_path_from_environmental_variable_or_download(
         return path_path
 
     # 4. Not found anywhere - attempt to download
-    return download_binary_into_cache_dir_and_return_path(cache_dir, bin_name=bin_name, bin_type=bin_type )
+    return download_binary_into_cache_dir_and_return_path(
+        cache_dir, bin_name=bin_name, bin_type=bin_type
+    )
 
 
 def download_binary_into_cache_dir_and_return_path(
-    cache_dir: str, bin_type:str, bin_name: str
+    cache_dir: str, bin_type: str, bin_name: str
 ) -> str:
     # Placeholder implementation - would download the binary
     bin_dir = os.path.join(cache_dir, bin_type)
@@ -540,7 +553,7 @@ class SWM:
         db_path = os.path.join(self.config.android_session_storage_path, "db.json")
         self.on_device_db = SWMOnDeviceDatabase(db_path, self.adb_wrapper)
 
-    def _get_binary(self, name: str, bin_type:str) -> str:
+    def _get_binary(self, name: str, bin_type: str) -> str:
         return search_or_obtain_binary_path_from_environmental_variable_or_download(
             self.cache_dir, name, bin_type
         )
@@ -622,20 +635,35 @@ class AppManager:
 
     def resolve_app_main_activity(self, app_id: str):
         # adb shell cmd package resolve-activity --brief <PACKAGE_NAME> | tail -n 1
-        ...
+        cmd = [
+            "bash",
+            "-c",
+            "cmd package resolve-activity --brief %s | tail -n 1" % app_id,
+        ]
+        output = self.swm.adb_wrapper.check_output_shell(cmd).strip()
+        return output
 
     def start_app_in_given_display(self, app_id: str, display_id: int):
         # adb shell am start --display <DISPLAY_ID> -n <PACKAGE/ACTIVITY>
-        ...
+        app_main_activity = self.resolve_app_main_activity(app_id)
+        self.swm.adb_wrapper.execute_shell(
+            ["am", "start", "--display", str(display_id), "-n", app_main_activity]
+        )
 
     def resolve_app_query(self, query: str):
-        print("Warning: app query resolution not implemented")
-        return query
+        ret = query
+        if not self.check_app_existance(query):
+            # this is definitely a query
+            ret = self.search(index=False, query=query)
+        return ret
 
     # let's mark it rooted device only.
     # we get the package path, data path and get last modification date of these files
     # or use java to access UsageStats
     def get_app_last_used_time_from_device(self):
+        raise NotImplementedError(
+            "Function 'get_app_last_used_time_from_device' has not been implemented"
+        )
         cmd = ""
         last_used_time = self.swm.adb_wrapper.execute_su_cmd(cmd, capture=True)
         return last_used_time
@@ -648,7 +676,7 @@ class AppManager:
         )
         return last_used_time
 
-    def search(self, index: bool):
+    def search(self, index: bool, query: Optional[str] = None):
         apps = self.list()
         items = []
         for i, it in enumerate(apps):
@@ -656,7 +684,7 @@ class AppManager:
             if index:
                 line = f"[{i+1}]\t{line}"
             items.append(line)
-        selected = self.swm.fzf_wrapper.select_item(items)
+        selected = self.swm.fzf_wrapper.select_item(items, query=query)
         if selected:
             package_id = selected.split("\t")[-1]
             return package_id
@@ -670,7 +698,6 @@ class AppManager:
         update_cache=False,
         additional_fields: dict = {},
     ):
-
         if most_used:
             apps = self.list_most_used_apps(most_used, update_cache=update_cache)
         else:
@@ -707,7 +734,6 @@ class AppManager:
     def run(
         self, app_id: str, init_config: Optional[str] = None, new_display: bool = True
     ):
-
         if not self.check_app_existance(app_id):
             raise NoAppError(
                 "Applicaion %s does not exist on device %s"
@@ -757,13 +783,42 @@ class AppManager:
         assert type(ret) == bool
         return ret
 
+    def copy_app_config(self, source_name: str, target_name: str):
+        import yaml
+        if target_name == "default":
+            raise ValueError("Target name cannot be 'default'")
+        if self.get_app_config_path(target_name):
+            raise ValueError("Target '%s' still exists. Consider using reference?" )
+        if source_name == "default":
+            config_yaml_content = self.default_app_config
+        elif source_name in self.list_app_config(print_result=False):
+            source_config_path = self.get_app_config_path(source_name)
+            with open(source_config_path, 'r') as f:
+                config_yaml_content = f.read()
+        ret = yaml.safe_load(config_yaml_content)
+        return ret
+
+    def list_app_config(self, print_result: bool):
+        # display config name, categorize them into two groups: default and custom
+        # you may configure the default config of an app to use a custom config
+        # both default and custom one could be referred in default config, but custom config cannot refer others
+        # if one default config is being renamed as custom config, then all reference shall be flattened
+        app_config_yamls = os.listdir(self.app_config_dir)
+        app_config_names = [os.path.splitext(it)[0] for it in app_config_yamls if it.endswith('.yaml')]
+        if print_result:
+            print("Warning: app config display is not implemented yet") 
+        return app_config_names
+
     def show_app_config(self, app_name: str):
         config = self.get_or_create_app_config(app_name)
         print(pretty_print_json(config))
 
-    def get_app_config_path(self, app_name: str):
+    @property
+    def app_config_dir(self):
+        return os.path.join(self.swm.cache_dir, "apps")
 
-        app_config_dir = os.path.join(self.swm.cache_dir, "apps")
+    def get_app_config_path(self, app_name: str):
+        app_config_dir = self.app_config_dir
         os.makedirs(app_config_dir, exist_ok=True)
 
         app_config_path = os.path.join(app_config_dir, f"{app_name}.yaml")
@@ -771,6 +826,10 @@ class AppManager:
 
     def get_or_create_app_config(self, app_name: str) -> Dict:
         import yaml
+
+        if app_name == "default":  # not creating it
+            default_config_yaml = self.default_app_config
+            return yaml.safe_load(default_config_yaml)
 
         app_config_path = self.get_app_config_path(app_name)
 
@@ -788,23 +847,34 @@ class AppManager:
         return """# Application configuration template
 # All settings are optional - uncomment and modify as needed
 
+# uncomment the below line for using custom config
+# reference: <custom_config_name>
+
+# notice, if you reference any config here, the below settings will be ignored
+
 # arguments passed to scrcpy
 scrcpy_args: []
+
+# install and enable adb keyboard, useful for using PC input method when multi-tasking
 use_adb_keyboard: true
+
+# retrieve and display app icon instead of the default scrcpy icon
 retrieve_app_icon: true
 """
 
     def save_app_config(self, app_name: str, config: Dict):
         import yaml
+
         app_config_path = self.get_app_config_path(app_name)
         with open(app_config_path, "w") as f:
             yaml.safe_dump(config, f)
 
     def list_all_apps(self, update_cache=False) -> List[dict[str, str]]:
         # package_ids = self.swm.adb_wrapper.list_packages()
-        package_list, cache_expired = (
-            self.swm.scrcpy_wrapper.load_package_id_and_alias_cache()
-        )
+        (
+            package_list,
+            cache_expired,
+        ) = self.swm.scrcpy_wrapper.load_package_id_and_alias_cache()
         if update_cache or cache_expired:
             package_list = self.swm.scrcpy_wrapper.list_package_id_and_alias()
             self.swm.scrcpy_wrapper.save_package_id_and_alias_cache(package_list)
@@ -845,11 +915,16 @@ class SessionManager:
 
     @property
     def template_session_config(self):
+        print(
+            "Warning: 'template_session_config' has not been implemented, returning placeholder instead."
+        )
         return ""
 
-    def resolve_session_query(self, query):
-        print("Warning: query resolution not implemented")
-        return query
+    def resolve_session_query(self, query: str):
+        if query in self.list():
+            return query
+        else:
+            return self.search(query)
 
     def get_swm_window_params(self) -> List[Dict[str, Any]]:
         windows = self.get_all_window_params()
@@ -1055,13 +1130,18 @@ class SessionManager:
             print(f"Unsupported OS: {os_type}")
         return None
 
-    def search(self):
+    def search(self, query: Optional[str] = None):
         sessions = self.list()
-        return self.swm.fzf_wrapper.select_item(sessions)
+        return self.swm.fzf_wrapper.select_item(sessions, query=query)
 
     def list(self) -> List[str]:
-        sessions = [f for f in os.listdir(self.session_dir) if f.endswith(".json")]
-        return sessions
+        session_json_paths = [
+            f for f in os.listdir(self.session_dir) if f.endswith(".json")
+        ]
+        session_names = [os.path.splitext(it)[0] for it in session_json_paths]
+        session_names.append("default")
+        # TODO: no one can save a session named "default", or one may customize this behavior through swm pc/android config, somehow allow this to happen
+        return session_names
 
     def save(self, session_name: str):
         import time
@@ -1157,10 +1237,20 @@ class DeviceManager:
         # adb shell settings put global device_name "NEW_NAME"
         # adb shell settings setprop net.hostname "NEW_NAME"
 
-    def search(self):
-        return self.swm.fzf_wrapper.select_item(self.list(print_formatted=False))
+    def search(self, query: Optional[str] = None):
+        return self.swm.fzf_wrapper.select_item(
+            self.list(print_formatted=False), query=query
+        )
 
-    def select(self, device_id: str):
+    def resolve_device_query(self, query: str):
+        if query in self.list(print_formatted=False):
+            device_id = query
+        else:
+            device_id = self.search(query)
+        return device_id
+
+    def select(self, query: str):
+        device_id = self.resolve_device_query(query)
         self.swm.set_current_device(device_id)
 
     def name(self, device_id: str, alias: str):
@@ -1181,7 +1271,9 @@ class AdbWrapper:
 
     def get_current_ime(self):
         # does not require su, but anyway we just use su
-        output = self.check_output_su("settings get secure default_input_method", check=False)
+        output = self.check_output_su(
+            "settings get secure default_input_method", check=False
+        )
         return output
 
     def list_active_imes(self):
@@ -1306,7 +1398,9 @@ class AdbWrapper:
         return result
 
     def check_output(self, args: List[str], device_id=None, **kwargs) -> str:
-        return self.execute(args, capture=True, device_id=device_id, **kwargs).stdout.strip()
+        return self.execute(
+            args, capture=True, device_id=device_id, **kwargs
+        ).stdout.strip()
 
     def read_file(self, remote_path: str) -> str:
         """Read a remote file's content as a string."""
@@ -1483,7 +1577,6 @@ output_icon_path = "{png_path}"
     def list_device_ids(
         self, skip_unauthorized: bool = True, with_status: bool = False
     ) -> List:
-
         # TODO: detect and filter unauthorized and abnormal devices
         output = self.check_output(["devices"])
         devices = []
@@ -1657,7 +1750,7 @@ class ScrcpyWrapper:
         scrcpy_args: list[str] = None,
         new_display=True,
         title: str = None,
-        no_audio=True, 
+        no_audio=True,
         use_adb_keyboard=False,
         env={},
     ):
@@ -1756,13 +1849,16 @@ class FzfWrapper:
     def __init__(self, fzf_path: str):
         self.fzf_path = fzf_path
 
-    def select_item(self, items: List[str]) -> str:
+    def select_item(self, items: List[str], query: Optional[str] = None) -> str:
         import tempfile
+
         with tempfile.NamedTemporaryFile(mode="w+") as tmp:
             tmp.write("\n".join(items))
             tmp.flush()
 
             cmd = [self.fzf_path, "--layout=reverse"]
+            if query:
+                cmd.extend(["--query", query])
             result = subprocess.run(
                 cmd, stdin=open(tmp.name, "r"), stdout=subprocess.PIPE, text=True
             )
@@ -1925,7 +2021,9 @@ def main():
                 print_diagnostic_info(program_specific_params)
             else:
                 print(omegaconf.OmegaConf.to_yaml(config))
-
+        elif args["show-default"]:
+            default_config = create_default_config(SWM_CACHE_DIR)
+            print(omegaconf.OmegaConf.to_yaml(default_config))
         elif args["edit"]:
             # Implementation would open editor
             print("Opening config editor")
@@ -1943,7 +2041,7 @@ def main():
                 alias = input("Enter the alias for device %s:" % device)
                 swm.device_manager.name(device, alias)
         elif args["select"]:
-            swm.device_manager.select(args["<device_id>"])
+            swm.device_manager.select(args["<query>"])
         elif args["name"]:
             swm.device_manager.name(args["<device_id>"], args["<device_alias>"])
 
@@ -1972,17 +2070,20 @@ def main():
         if args["app"]:
             if args["list"]:
                 update_cache = args[
-                    "latest"
+                    "update"
                 ]  # cache previous list result (alias, id), but last_used_time is always up-to-date
-                apps = swm.app_manager.list(
+                with_type = args["with-type"]
+                swm.app_manager.list(
                     print_formatted=True,
                     update_cache=update_cache,
                     additional_fields=dict(
-                        last_used_time=args["last_used"], type_symbol=args["type"]
+                        last_used_time=args["with-last-used-time"],
+                        type_symbol=with_type,
                     ),
                 )
             elif args["search"]:
                 app_id = swm.app_manager.search(index=args["index"])
+                with_type = args["with-type"]
                 if app_id is None:
                     raise NoSelectionError("No app has been selected")
                 print("Selected app: {}".format(app_id))
@@ -2016,17 +2117,25 @@ def main():
                 # TODO: search with query instead
                 app_id = swm.app_manager.resolve_app_query(query)
                 swm.app_manager.run(
-                    app_id,
+                    app_id, # type: ignore
                     init_config=init_config,
                     new_display=not no_new_display,
                 )
 
             elif args["config"]:
                 config_name = args["<config_name>"]
-                if args["show"]:
+                if args["list"]:
+                    swm.app_manager.list_app_config(print_result=True)
+                elif args["show"]:
                     swm.app_manager.show_app_config(config_name)
+                elif args["show-default"]:
+                    swm.app_manager.show_app_config("default")
                 elif args["edit"]:
                     swm.app_manager.edit_app_config(config_name)
+                elif args["copy"]:
+                    swm.app_manager.copy_app_config(
+                        args["<source_name>"], args["<target_name>"]
+                    )
 
         elif args["session"]:
             if args["list"]:
