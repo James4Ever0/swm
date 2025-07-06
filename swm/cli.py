@@ -1,6 +1,7 @@
 """SWM - Scrcpy Window Manager
 
 Usage:
+  swm init
   swm [options] adb [<adb_args>...]
   swm [options] scrcpy [<scrcpy_args>...]
   swm [options] app run <query> [no-new-display] [<init_config>]
@@ -53,6 +54,68 @@ from tinydb.table import Document
 __version__ = "0.1.0"
 
 
+def get_init_complete_path(basedir: str):
+    init_flag = os.path.join(basedir, ".INITIAL_BINARIES_DOWNLOADED")
+    return init_flag
+
+
+def check_init_complete(basedir: str):
+    init_flag = get_init_complete_path(basedir)
+    return os.path.exists(init_flag)
+
+
+def test_best_github_mirror(mirror_list: list[str], timeout: float):
+    results = []
+    for it in mirror_list:
+        success, duration = test_internet_connectivity(it, timeout)
+        results.append((success, duration, it))
+    results = list(filter(lambda x: x[0], results))
+    results.sort(key=lambda x: x[1])
+
+    if len(results) > 0:
+        return results[0][2]
+    else:
+        return None
+
+
+def test_internet_connectivity(url: str, timeout: float):
+    import requests
+
+    try:
+        response = requests.get(url, verify=False, timeout=timeout)
+        return response.status_code == 200, response.elapsed.total_seconds()
+    except:
+        return False, -1
+
+
+def download_initial_binaries(basedir: str, mirror_list: list[str]):
+    import pathlib
+
+    init_flag = get_init_complete_path(basedir)
+    if check_init_complete(basedir):
+        print("Initialization complete")
+        return
+    github_mirror = test_best_github_mirror(mirror_list, timeout=5)
+    print("Using mirror: %s" % github_mirror)
+    baseurl = "%s/James4Ever0/swm/releases/download/bin/" % github_mirror
+    pc_os_arch = (
+        "%s-%s" % get_system_and_architecture()
+    )  # currently, linux only. let's be honest.
+    print("Your PC OS and architecture: %s" % pc_os_arch)
+    download_files = [
+        "android-binaries.zip",
+        "apk.zip",
+        "pc-binaries-%s.zip" % pc_os_arch,
+    ]
+    # now download and unzip all zip files to target directory
+    for it in download_files:
+        url = baseurl + it
+        print("Downloading %s" % url)
+        download_and_unzip(url, basedir)
+    print("All binaries downloaded")
+    pathlib.Path(init_flag).touch()
+
+
 def convert_unicode_escape(input_str):
     # Extract the hex part after 'u+'
     hex_str = input_str[2:]
@@ -72,6 +135,7 @@ def split_args(args_str: str):
 
 def encode_base64_str(data: str):
     import base64
+
     encoded_bytes = base64.b64encode(data.encode("utf-8"))
     encoded_str = encoded_bytes.decode("utf-8")
     return encoded_str
@@ -173,6 +237,7 @@ def parse_scrcpy_app_list_output_single_line(text: str):
 
 def select_editor():
     import shutil
+
     unix_editors = ["vim", "nano", "vi", "emacs"]
     windows_editors = ["notepad"]
     cross_platform_editors = ["code"]
@@ -223,6 +288,7 @@ def edit_or_open_file(filepath: str, return_value="edited"):
 
 def open_file_with_default_application(filepath: str):
     import shutil
+
     system = platform.system()
     if system == "Darwin":  # macOS
         command = ["open", filepath]
@@ -246,11 +312,12 @@ def download_and_unzip(url, extract_dir):
     import tempfile
     import requests
     import zipfile
+
     # Create extraction directory if it doesn't exist
     os.makedirs(extract_dir, exist_ok=True)
 
     # Stream download to a temporary file
-    with requests.get(url, stream=True) as response:
+    with requests.get(url, stream=True, allow_redirects=True, verify=False) as response:
         response.raise_for_status()  # Raise error for bad status codes
 
         with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
@@ -271,10 +338,10 @@ def download_and_unzip(url, extract_dir):
 def get_system_and_architecture():
     system = platform.system().lower()
     arch = platform.machine().lower()
-    if arch == "x86_64":
-        arch = "x64"
-    elif arch == "aarch64":
-        arch = "arm64"
+    # if arch == "x86_64":
+    #     arch = "x64"
+    # elif arch == "aarch64":
+    #     arch = "arm64"
     return system, arch
 
 
@@ -291,6 +358,7 @@ def collect_system_info_for_diagnostic():
 
 def pretty_print_json(obj):
     import json
+
     return json.dumps(obj, ensure_ascii=False, indent=4)
 
 
@@ -312,9 +380,10 @@ def execute_subprogram(program_path, args):
 
 
 def search_or_obtain_binary_path_from_environmental_variable_or_download(
-    cache_dir: str, bin_name: str
+    cache_dir: str, bin_name: str, bin_type:str
 ) -> str:
     import shutil
+
     # Adjust binary name for platform
     bin_env_name = bin_name.upper()
     platform_specific_name = bin_name.lower()
@@ -327,25 +396,25 @@ def search_or_obtain_binary_path_from_environmental_variable_or_download(
     if env_path and os.path.exists(env_path):
         return env_path
 
-    # 2. Check in PATH
+    # 2. Check in cache directory
+    cache_path = os.path.join(cache_dir, "pc-binaries", platform_specific_name)
+    if os.path.exists(cache_path):
+        return cache_path
+
+    # 3. Check in PATH
     path_path = shutil.which(platform_specific_name)
     if path_path:
         return path_path
 
-    # 3. Check in cache directory
-    cache_path = os.path.join(cache_dir, "bin", platform_specific_name)
-    if os.path.exists(cache_path):
-        return cache_path
-
     # 4. Not found anywhere - attempt to download
-    return download_binary_into_cache_dir_and_return_path(cache_dir, bin_name)
+    return download_binary_into_cache_dir_and_return_path(cache_dir, bin_name=bin_name, bin_type=bin_type )
 
 
 def download_binary_into_cache_dir_and_return_path(
-    cache_dir: str, bin_name: str
+    cache_dir: str, bin_type:str, bin_name: str
 ) -> str:
     # Placeholder implementation - would download the binary
-    bin_dir = os.path.join(cache_dir, "bin")
+    bin_dir = os.path.join(cache_dir, bin_type)
     os.makedirs(bin_dir, exist_ok=True)
 
     # For demonstration purposes, we'll just create an empty file
@@ -373,6 +442,7 @@ class ADBStorage(Storage):
 
     def read(self):
         import json
+
         try:
             if self.enable_read_cache:
                 if self.read_cache is None:
@@ -389,6 +459,7 @@ class ADBStorage(Storage):
 
     def write(self, data):
         import json
+
         content = json.dumps(data)
         self.adb_wrapper.write_file(self.filename, content)
         if self.enable_read_cache:
@@ -401,6 +472,7 @@ class ADBStorage(Storage):
 class SWMOnDeviceDatabase:
     def __init__(self, db_path: str, adb_wrapper: "AdbWrapper"):
         import functools
+
         self.db_path = db_path
         self.storage = functools.partial(ADBStorage, adb_wrapper=adb_wrapper)
         self._db = TinyDB(db_path, storage=self.storage)
@@ -442,9 +514,9 @@ class SWM:
         os.makedirs(self.bin_dir, exist_ok=True)
 
         # Initialize binaries
-        self.adb = self._get_binary("adb")
-        self.scrcpy = self._get_binary("scrcpy")
-        self.fzf = self._get_binary("fzf")
+        self.adb = self._get_binary("adb", "pc-binaries")
+        self.scrcpy = self._get_binary("scrcpy", "pc-binaries")
+        self.fzf = self._get_binary("fzf", "pc-binaries")
 
         # Initialize components
         self.adb_wrapper = AdbWrapper(self.adb, self.config)
@@ -465,9 +537,9 @@ class SWM:
         db_path = os.path.join(self.config.android_session_storage_path, "db.json")
         self.on_device_db = SWMOnDeviceDatabase(db_path, self.adb_wrapper)
 
-    def _get_binary(self, name: str) -> str:
+    def _get_binary(self, name: str, bin_type:str) -> str:
         return search_or_obtain_binary_path_from_environmental_variable_or_download(
-            self.cache_dir, name
+            self.cache_dir, name, bin_type
         )
 
     def set_current_device(self, device_id: str):
@@ -696,6 +768,7 @@ class AppManager:
 
     def get_or_create_app_config(self, app_name: str) -> Dict:
         import yaml
+
         app_config_path = self.get_app_config_path(app_name)
 
         if not os.path.exists(app_config_path):
@@ -1011,6 +1084,7 @@ class SessionManager:
 
     def edit(self, session_name: str):
         import tempfile
+
         session_path = self.get_session_path(session_name)
         if self.adb_wrapper.test_path_existance(session_name):
             tmpfile_content = self.adb_wrapper.read_file(session_path)
@@ -1030,12 +1104,14 @@ class SessionManager:
 
     def _save_session_data(self, session_name, session_data):
         import json
+
         session_path = self.get_session_path(session_name)
         content = json.dumps(session_data, indent=2)
         self.swm.adb_wrapper.write_file(session_path, content)
 
     def restore(self, session_name: str):
         import json
+
         session_path = os.path.join(self.session_dir, f"{session_name}.json")
 
         if not self.swm.adb_wrapper.test_path_existance(session_path):
@@ -1231,6 +1307,7 @@ class AdbWrapper:
     def read_file(self, remote_path: str) -> str:
         """Read a remote file's content as a string."""
         import tempfile
+
         with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
             tmp_path = tmp_file.name
         try:
@@ -1242,6 +1319,7 @@ class AdbWrapper:
 
     def write_file(self, remote_path: str, content: str):
         import tempfile
+
         """Write a string to a remote file."""
         with tempfile.NamedTemporaryFile(mode="w", delete=False) as tmp_file:
             tmp_path = tmp_file.name
@@ -1450,7 +1528,7 @@ output_icon_path = "{png_path}"
             device_path = os.path.join(self.config.android_session_storage_path, "aapt")
         device_architecture = self.get_device_architecture()
         local_aapt_path = os.path.join(
-            self.config.cache_dir, "bin", "aapt-%s" % device_architecture
+            self.config.cache_dir, "android-binaries", "aapt-%s" % device_architecture
         )
         self.execute(["push", local_aapt_path, device_path])
         self.execute(["shell", "chmod", "755", device_path])
@@ -1480,6 +1558,7 @@ class ScrcpyWrapper:
     def load_package_id_and_alias_cache(self):
         import json
         import time
+
         package_list = None
         cache_expired = True
         if self.adb_wrapper.test_path_existance(self.app_list_cache_path):
@@ -1496,6 +1575,7 @@ class ScrcpyWrapper:
     def save_package_id_and_alias_cache(self, package_list):
         import json
         import time
+
         data = {"package_list": package_list, "cache_save_time": time.time()}
         content = json.dumps(data)
         self.adb_wrapper.write_file(self.app_list_cache_path, content)
@@ -1507,7 +1587,7 @@ class ScrcpyWrapper:
         ret = {}
         for it in output_lines:
             it = it.strip()
-             # we can only have size here, not dpi
+            # we can only have size here, not dpi
             if it.startswith("--display-id"):
                 display_id_part, size_part = it.split()
                 display_id = display_id_part.split("=")[-1]
@@ -1517,6 +1597,7 @@ class ScrcpyWrapper:
                 x_size, y_size = int(x_size), int(y_size)
                 ret[display_id] = dict(x=x_size, y=y_size)
         return ret
+
     # TODO: use "scrcpy --list-apps" instead of using aapt to parse app labels
 
     def list_package_id_and_alias(self):
@@ -1576,6 +1657,7 @@ class ScrcpyWrapper:
         env={},
     ):
         import signal
+
         args = []
 
         configured_window_options = []
@@ -1652,6 +1734,7 @@ class ScrcpyWrapper:
     def clipboard_paste_input_text(self, text: str):
         import pyperclip
         import pyautogui
+
         pyperclip.copy(text)
         if platform.system() == "Darwin":
             pyautogui.hotkey("command", "v")
@@ -1733,6 +1816,7 @@ def override_system_excepthook(
 ):
     import sys
     import traceback
+
     def custom_excepthook(exc_type, exc_value, exc_traceback):
         if exc_type not in ignorable_exceptions:
             traceback.print_exception(
@@ -1752,10 +1836,17 @@ def parse_args():
 
 def main():
     import sys
+
     # Setup cache directory
     default_cache_dir = os.path.expanduser("~/.swm")
 
     SWM_CACHE_DIR = os.environ.get("SWM_CACHE_DIR", default_cache_dir)
+
+    init_complete = check_init_complete(SWM_CACHE_DIR)
+    if not init_complete:
+        print(
+            "Warning: Initialization incomplete. Consider running 'swm init' to download missing binaries."
+        )
 
     os.makedirs(SWM_CACHE_DIR, exist_ok=True)
     # Parse CLI arguments
@@ -1807,7 +1898,11 @@ def main():
 
     # # Command routing
     # try:
-    if args["adb"]:
+
+    if args["init"]:
+        # setup initial environment, download binaries
+        download_initial_binaries(SWM_CACHE_DIR, config.github_mirrors)
+    elif args["adb"]:
         execute_subprogram(swm.adb, args["<adb_args>"])
 
     elif args["scrcpy"]:
