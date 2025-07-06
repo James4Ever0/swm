@@ -1,6 +1,6 @@
 
 <div align="center">
-<img src="logo/logo.png" alt="logo" width="200"/>
+<img src="https://raw.githubusercontent.com/james4ever0/swm/main/logo/logo.png" alt="logo" width="200"/>
 
 <h1>Scrcpy Window Manager</h1>
 </div>
@@ -22,7 +22,6 @@ Using `pip`:
 pip install swm-android
 ```
 
-Nuitka compiled binaries are underway.
 
 ## Commandline
 
