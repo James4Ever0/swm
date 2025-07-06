@@ -112,6 +112,9 @@ def download_initial_binaries(basedir: str, mirror_list: list[str]):
         url = baseurl + it
         print("Downloading %s" % url)
         download_and_unzip(url, basedir)
+    if os.name == "posix":
+        print("Making PC binaries executable")
+        subprocess.run(["chmod", "-R", "+x", os.path.join(basedir, "pc-binaries")])
     print("All binaries downloaded")
     pathlib.Path(init_flag).touch()
 
@@ -338,10 +341,10 @@ def download_and_unzip(url, extract_dir):
 def get_system_and_architecture():
     system = platform.system().lower()
     arch = platform.machine().lower()
-    # if arch == "x86_64":
-    #     arch = "x64"
-    # elif arch == "aarch64":
-    #     arch = "arm64"
+    if arch == "x64":
+        arch = "x86_64"
+    elif arch == "arm64":
+        arch = "aarch64"
     return system, arch
 
 
@@ -792,6 +795,7 @@ retrieve_app_icon: true
 """
 
     def save_app_config(self, app_name: str, config: Dict):
+        import yaml
         app_config_path = self.get_app_config_path(app_name)
         with open(app_config_path, "w") as f:
             yaml.safe_dump(config, f)
@@ -1177,7 +1181,7 @@ class AdbWrapper:
 
     def get_current_ime(self):
         # does not require su, but anyway we just use su
-        output = self.check_output_su("settings get secure default_input_method")
+        output = self.check_output_su("settings get secure default_input_method", check=False)
         return output
 
     def list_active_imes(self):
@@ -1301,8 +1305,8 @@ class AdbWrapper:
         result = subprocess.run(cmd, capture_output=capture, text=text, check=check)
         return result
 
-    def check_output(self, args: List[str], device_id=None) -> str:
-        return self.execute(args, capture=True, device_id=device_id).stdout.strip()
+    def check_output(self, args: List[str], device_id=None, **kwargs) -> str:
+        return self.execute(args, capture=True, device_id=device_id, **kwargs).stdout.strip()
 
     def read_file(self, remote_path: str) -> str:
         """Read a remote file's content as a string."""
@@ -1402,7 +1406,7 @@ class AdbWrapper:
         self.write_file(sh_tmp_path, java_code_runner)
 
     def get_app_apk_path(self, app_id: str):
-        output = self.check_output(["shell", "pm", "path", app_id]).strip()
+        output = self.check_output(["shell", "pm", "path", app_id], check=False).strip()
         if output:
             prefix = "package:"
             apk_path = output[len(prefix) :]
@@ -1653,6 +1657,7 @@ class ScrcpyWrapper:
         scrcpy_args: list[str] = None,
         new_display=True,
         title: str = None,
+        no_audio=True, 
         use_adb_keyboard=False,
         env={},
     ):
@@ -1673,6 +1678,9 @@ class ScrcpyWrapper:
         if new_display:
             args.extend(["--new-display"])
 
+        if no_audio:
+            args.extend(["--no-audio"])
+
         if title:
             args.extend(["--window-title", title])
 
@@ -1692,8 +1700,10 @@ class ScrcpyWrapper:
         # self.execute(args)
         unicode_char_warning = "[server] WARN: Could not inject char"
         cmd = self._build_cmd(args)
+        _env = os.environ.copy()
+        _env.update(env)
         proc = subprocess.Popen(
-            cmd, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True, env=env
+            cmd, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True, env=_env
         )
         proc_pid = proc.pid
         assert proc.stderr
@@ -1747,6 +1757,7 @@ class FzfWrapper:
         self.fzf_path = fzf_path
 
     def select_item(self, items: List[str]) -> str:
+        import tempfile
         with tempfile.NamedTemporaryFile(mode="w+") as tmp:
             tmp.write("\n".join(items))
             tmp.flush()
@@ -1842,12 +1853,6 @@ def main():
 
     SWM_CACHE_DIR = os.environ.get("SWM_CACHE_DIR", default_cache_dir)
 
-    init_complete = check_init_complete(SWM_CACHE_DIR)
-    if not init_complete:
-        print(
-            "Warning: Initialization incomplete. Consider running 'swm init' to download missing binaries."
-        )
-
     os.makedirs(SWM_CACHE_DIR, exist_ok=True)
     # Parse CLI arguments
     args = parse_args()
@@ -1893,16 +1898,22 @@ def main():
     config.verbose = verbose
     config.debug = debug
 
+    if args["init"]:
+        # setup initial environment, download binaries
+        download_initial_binaries(SWM_CACHE_DIR, config.github_mirrors)
+        return
+    init_complete = check_init_complete(SWM_CACHE_DIR)
+    if not init_complete:
+        print(
+            "Warning: Initialization incomplete. Consider running 'swm init' to download missing binaries."
+        )
     # Initialize SWM core
     swm = SWM(config)
 
     # # Command routing
     # try:
 
-    if args["init"]:
-        # setup initial environment, download binaries
-        download_initial_binaries(SWM_CACHE_DIR, config.github_mirrors)
-    elif args["adb"]:
+    if args["adb"]:
         execute_subprogram(swm.adb, args["<adb_args>"])
 
     elif args["scrcpy"]:
