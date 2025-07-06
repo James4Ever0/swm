@@ -1,0 +1,8 @@
+omegaconf
+docopt
+requests
+PyYAML
+pandas
+tinydb
+pyperclip
+pyautogui
