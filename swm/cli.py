@@ -40,7 +40,13 @@ Options:
   --debug       Debug mode, capturing all exceptions.
 """
 
-# TODO: only import package when needed
+# TODO: suggest possible command completions when the user types a wrong command, using levenshtein
+
+# TODO: when the main screen is locked, clipboard may fail to traverse. warn the user and ask to unlock the screen. (or automatically unlock the screen, if possible)
+
+# TODO: consider a command to mirror the main display
+
+# only import package when needed
 # TODO: create a filelock or pid file to prevent multiple instances of the same app running
 # TODO: ask the user to "run anyway" when multiple instances of the same app are running
 
@@ -492,6 +498,8 @@ class SWMOnDeviceDatabase:
         self.db_path = db_path
         self.storage = functools.partial(ADBStorage, adb_wrapper=adb_wrapper)
         self._db = TinyDB(db_path, storage=self.storage)
+    
+
 
     def write_app_last_used_time(
         self, device_id, app_id: str, last_used_time: datetime
@@ -507,6 +515,10 @@ class SWMOnDeviceDatabase:
             },
             (AppUsage.device_id == device_id) & (AppUsage.app_id == app_id),
         )
+    
+    def update_app_last_used_time(self, device_id:str, app_id:str):
+        last_used_time = datetime.now()
+        self.write_app_last_used_time(device_id, app_id, last_used_time)
 
     def get_app_last_used_time(self, device_id, app_id: str) -> Optional[datetime]:
         AppUsage = Query()
@@ -711,10 +723,7 @@ class AppManager:
     def install_and_use_adb_keyboard(self):  # require root
         # TODO: check root avalibility, decorate this method, if no root is found then raise exception
         self.swm.adb_wrapper.install_adb_keyboard()
-        self.swm.adb_wrapper.execute_su_cmd(
-            "ime enable com.android.adbkeyboard/.AdbIME"
-        )
-        self.swm.adb_wrapper.execute_su_cmd("ime set com.android.adbkeyboard/.AdbIME")
+        self.swm.adb_wrapper.enable_and_set_adb_keyboard()
 
     def retrieve_app_icon(self, package_id: str, icon_path: str):
         self.swm.adb_wrapper.retrieve_app_icon(package_id, icon_path)
@@ -763,6 +772,9 @@ class AppManager:
 
         title = self.build_window_title(app_id)
 
+        # Write last used time to db
+        self.update_app_last_used_time_to_db(app_id)
+
         # Execute scrcpy
         self.swm.scrcpy_wrapper.launch_app(
             app_id,
@@ -773,6 +785,13 @@ class AppManager:
             use_adb_keyboard=use_adb_keyboard,
             env=env,
         )
+    
+    def update_app_last_used_time_to_db(self, app_id:str):
+        # we cannot update the last used time at device, since it is managed by android
+        assert self.swm.current_device, "No current device being set"
+        assert self.swm.on_device_db, "Device '%s' missing on device db" % self.swm.current_device
+        device_id = self.swm.current_device
+        self.swm.on_device_db.update_app_last_used_time(device_id, app_id)
 
     def edit_app_config(self, app_name: str) -> bool:
         # return True if edited, else False
@@ -815,7 +834,7 @@ class AppManager:
 
     @property
     def app_config_dir(self):
-        return os.path.join(self.swm.cache_dir, "apps")
+        return os.path.join(self.swm.cache_dir, "apps") # TODO: had better to separate devices, though. could add suffix to config name, in order to share config
 
     def get_app_config_path(self, app_name: str):
         app_config_dir = self.app_config_dir
@@ -823,8 +842,20 @@ class AppManager:
 
         app_config_path = os.path.join(app_config_dir, f"{app_name}.yaml")
         return app_config_path
-
-    def get_or_create_app_config(self, app_name: str) -> Dict:
+    
+    def resolve_app_config_reference(self, ref:str, sources: List[str]=[]): # BUG: if you mark List as "list" it will be resolved into class method "list"
+        if ref == 'default':
+          raise ValueError("Reference cannot be 'default'")
+        if ref in sources:
+          raise ValueError("Loop reference found for %s in %s" % (ref, sources))
+        # this ref must exists
+        assert ref in self.list_app_config(print_result=False), "Reference %s does not exist" % ref
+        ret = self.get_or_create_app_config(ref, resolve_reference=False)
+        ref_in_ref = ret.get('reference', None)
+        if ref_in_ref:
+          ret = self.resolve_app_config_reference(ref=ref_in_ref,sources=sources+[ref])
+        return ret
+    def get_or_create_app_config(self, app_name: str, resolve_reference=True) -> Dict:
         import yaml
 
         if app_name == "default":  # not creating it
@@ -840,7 +871,12 @@ class AppManager:
                 f.write(self.default_app_config)
 
         with open(app_config_path, "r") as f:
-            return yaml.safe_load(f)
+            ret = yaml.safe_load(f)
+        if resolve_reference:
+          ref = ret.get("reference", None)
+          if ref:
+            ret = self.resolve_app_config_reference(ref, sources=[app_name])
+        return ret
 
     @property
     def default_app_config(self):
@@ -918,7 +954,10 @@ class SessionManager:
         print(
             "Warning: 'template_session_config' has not been implemented, returning placeholder instead."
         )
-        return ""
+        return """
+# Session template config
+# Uncomment any options below and begin customization
+"""
 
     def resolve_session_query(self, query: str):
         if query in self.list():
@@ -1183,26 +1222,26 @@ class SessionManager:
             self.swm.adb_wrapper.write_file(session_path, edited_content)
 
     def get_session_path(self, session_name):
-        session_path = os.path.join(self.session_dir, f"{session_name}.json")
+        session_path = os.path.join(self.session_dir, f"{session_name}.yaml")
         return session_path
 
     def _save_session_data(self, session_name, session_data):
-        import json
+        import yaml
 
         session_path = self.get_session_path(session_name)
-        content = json.dumps(session_data, indent=2)
+        content = yaml.safe_dump(session_data)
         self.swm.adb_wrapper.write_file(session_path, content)
 
     def restore(self, session_name: str):
-        import json
+        import yaml
 
-        session_path = os.path.join(self.session_dir, f"{session_name}.json")
+        session_path = self.get_session_path(session_name)
 
         if not self.swm.adb_wrapper.test_path_existance(session_path):
             raise FileNotFoundError(f"Session not found: {session_name}")
 
         content = self.swm.adb_wrapper.read_file(session_path)
-        session_data = json.loads(content)
+        session_data = yaml.safe_load(content)
 
         # Restore each window
         for app_name, window_config in session_data["windows"].items():
@@ -1210,7 +1249,7 @@ class SessionManager:
             # Additional window positioning would go here
 
     def delete(self, session_name: str) -> bool:
-        session_path = os.path.join(self.session_dir, f"{session_name}.json")
+        session_path=self.get_session_path(session_name)
         if os.path.exists(session_path):
             os.remove(session_path)
             return True
@@ -1330,7 +1369,6 @@ class AdbWrapper:
             ["am", "broadcast", "-a", "ADB_INPUT_B64", "--es", "msg", base64_text]
         )
         # TODO: restore the previously using keyboard after swm being detached, either manually or using script/apk
-        ...
 
     def execute_shell(self, cmd_args: list[str], **kwargs):
         self.execute(["shell", *cmd_args], **kwargs)
@@ -1442,8 +1480,11 @@ class AdbWrapper:
         raise FileNotFoundError(f"APK file {apk_name} not found in cache")
 
     def install_adb_keyboard(self):
-        apk_path = self.get_swm_apk_path("ADBKeyboard")
-        self.install_apk(apk_path)
+        adb_keyboard_app_id = "com.android.adbkeyboard"
+        installed_app_id_list = self.list_packages()
+        if adb_keyboard_app_id not in installed_app_id_list:
+            apk_path = self.get_swm_apk_path("ADBKeyboard")
+            self.install_apk(apk_path)
 
     def execute_su_cmd(self, cmd: str, **kwargs):
         return self.execute(["shell", "su", "-c", cmd], **kwargs)
@@ -1454,19 +1495,20 @@ class AdbWrapper:
         cmd = "sh %s" % tmpfile
         return self.execute_su_cmd(cmd, **kwargs)
 
-    def enable_adb_keyboard(self):
-        self.execute(
-            [
-                "shell",
-                "am",
-                "start",
-                "-n",
-                "com.jb.gokeyboard/.activity.GoKeyboardActivity",
-            ]
+    def enable_and_set_specific_keyboard(self, keyboard_activity_name: str):
+        self.execute_su_cmd(
+            "ime enable %s" % keyboard_activity_name
         )
+        self.execute_su_cmd("ime set %s" % keyboard_activity_name)
+
+
+    def enable_and_set_adb_keyboard(self):
+        keyboard_activity_name = "com.android.adbkeyboard/.AdbIME"
+        if self.get_current_ime() != keyboard_activity_name:
+            self.enable_and_set_specific_keyboard(keyboard_activity_name)
 
     def disable_adb_keyboard(self):
-        self.execute(["shell", "am", "force-stop", "com.jb.gokeyboard"])
+        self.execute(["shell", "am", "force-stop", "com.android.adbkeyboard"])
 
     def install_apk(self, apk_path: str, instant=False):
         """Install an APK file on the device."""
@@ -1575,7 +1617,7 @@ output_icon_path = "{png_path}"
         return self.check_output(["shell", "getprop", "ro.product.cpu.abi"])
 
     def list_device_ids(
-        self, skip_unauthorized: bool = True, with_status: bool = False
+        self, status_blacklist:list[str] = ["unauthorized", "fastboot"], with_status: bool = False
     ) -> List:
         # TODO: detect and filter unauthorized and abnormal devices
         output = self.check_output(["devices"])
@@ -1585,13 +1627,13 @@ output_icon_path = "{png_path}"
                 elements = line.split()
                 device_id = elements[0]
                 device_status = elements[1]
-                if not skip_unauthorized or device_status != "unauthorized":
+                if device_status not in status_blacklist:
                     if with_status:
                         devices.append({"id": device_id, "status": device_status})
                     else:
                         devices.append(device_id)
                 else:
-                    print("Warning: device %s unauthorized thus skipped" % device_id)
+                    print("Warning: device %s status '%s' is in blacklist %s thus skipped" % (device_id, device_status, status_blacklist))
         return devices
 
     def list_device_detailed(self) -> List[str]:
@@ -1698,6 +1740,7 @@ class ScrcpyWrapper:
     # TODO: use "scrcpy --list-apps" instead of using aapt to parse app labels
 
     def list_package_id_and_alias(self):
+        # will not list apps without activity or UI
         # scrcpy --list-apps
         output = self.check_output(["--list-apps"])
         # now, parse these apps
@@ -1746,15 +1789,16 @@ class ScrcpyWrapper:
     def launch_app(
         self,
         package_name: str,
-        window_params: Dict = None,
-        scrcpy_args: list[str] = None,
+        window_params: Optional[Dict] = None,
+        scrcpy_args: Optional[list[str]] = None,
         new_display=True,
-        title: str = None,
+        title: Optional[str] = None,
         no_audio=True,
         use_adb_keyboard=False,
         env={},
     ):
         import signal
+        import psutil
 
         args = []
 
@@ -1803,8 +1847,12 @@ class ScrcpyWrapper:
         previous_ime = self.adb_wrapper.get_current_ime()
         # TODO: capture stdout for getting new display id
         # TODO: collect missing char into batches and execute once every 0.5 seconds
-        # TODO: restart the app in given display if exited (configure this behavior as an option "on_app_exit")
+        # TODO: restart the app in given display if exited, or just close the window (configure this behavior as an option "on_app_exit")
         try:
+            # write the pid to the path
+            swm_scrcpy_proc_pid_path = self.generate_swm_scrcpy_proc_pid_path()
+            with open(swm_scrcpy_proc_pid_path, "w") as f:
+                f.write(str(proc_pid))
             for line in proc.stderr:
                 captured_line = line.strip()
                 if self.config.verbose:
@@ -1826,13 +1874,76 @@ class ScrcpyWrapper:
                 # [server] WARN: Could not inject char u+4f60
                 # TODO: use adb keyboard for pasting text from clipboard
         finally:
+            if os.path.exists(swm_scrcpy_proc_pid_path):
+                os.remove(swm_scrcpy_proc_pid_path)
+
             # TODO: close the app when the main process is closed
-            # kill by pid
-            os.kill(proc_pid, signal.SIGKILL)
-            proc.kill()
-            # TODO: revert back to previously using ime, if no other opening swm window
-            # if self.swm.check_no_other_swm_running():
-            # self.adb_wrapper.execute_su_cmd("ime enable %s" % previous_ime)
+            # kill by pid, if alive
+
+            if psutil.pid_exists(proc_pid):
+                os.kill(proc_pid, signal.SIGKILL)
+                proc.kill()
+
+            no_swm_process_running = not self.has_swm_process_running
+
+            if no_swm_process_running:
+                print("Reverting to previous ime")
+                self.adb_wrapper.enable_and_set_specific_keyboard(previous_ime)
+
+    def check_app_in_display(self, app_id:str, display_id:int):
+        raise NotImplementedError("TODO")
+
+    def scrcpy_app_monitor(self, app_id:str, display_id:int, proc_pid:int):
+        import signal
+        import time
+        import psutil
+        while True:
+            time.sleep(1)
+            app_in_display = self.check_app_in_display(app_id, display_id)
+            process_alive = psutil.pid_exists(proc_pid)
+            if not process_alive:
+                break
+            if not app_in_display:
+                # kill scrcpy
+                os.kill(proc_pid, signal.SIGKILL)
+    
+    def start_sidecar_scrcpy_app_monitor_thread(self, app_id:str, display_id:int, scrcpy_pid:int):
+        import threading
+        # configure this thread with daemon=True
+        target = self.scrcpy_app_monitor
+        thread = threading.Thread(target=target,kwargs = dict(app_id=app_id, display_id=display_id, scrcpy_pid=scrcpy_pid), daemon=True)
+        thread.start()
+
+    def generate_swm_scrcpy_proc_pid_path(self):
+        import uuid
+        unique_id = str(uuid.uuid4())
+        filename =  "%s.txt" % unique_id
+        ret = os.path.join(self.swm_scrcpy_proc_pid_basedir, filename)
+        return ret
+    
+    @property
+    def swm_scrcpy_proc_pid_basedir(self):
+        ret = os.path.join(self.config.cache_dir, "swm_scrcpy_proc_pid")
+        if not os.path.exists(ret):
+            os.makedirs(ret, exist_ok=True)
+        return ret
+    
+    @property
+    def has_swm_process_running(self):
+        return len(self.get_running_swm_managed_scrcpy_pids()) > 0
+    
+    def get_running_swm_managed_scrcpy_pids(self):
+        import psutil
+        ret = []
+        for it in os.listdir(self.swm_scrcpy_proc_pid_basedir):
+            path = os.path.join(self.swm_scrcpy_proc_pid_basedir, it)
+            if os.path.isfile(path):
+                with open(path, "r") as f:
+                    pid = f.read()
+                    pid = int(pid)
+                    if  psutil.pid_exists(pid):
+                        ret.append(pid)
+        return ret
 
     def clipboard_paste_input_text(self, text: str):
         import pyperclip
@@ -1907,7 +2018,7 @@ def get_config_path(cache_dir: str) -> str:
     return config_path
 
 
-def load_or_create_config(cache_dir: str, config_path: str) -> omegaconf.DictConfig:
+def load_or_create_config(cache_dir: str, config_path: str):
     if os.path.exists(config_path):
         print("Loading existing config from:", config_path)
         return omegaconf.OmegaConf.load(config_path)
@@ -2061,7 +2172,10 @@ def main():
 
         current_device = swm.infer_current_device(default_device)
 
+
         if current_device is not None:
+            device_name = swm.adb_wrapper.get_device_name(current_device) # could fail if status is not "device", such as "fastboot"
+            print("Current device name:", device_name)
             swm.set_current_device(current_device)
             swm.load_swm_on_device_db()
         else:
