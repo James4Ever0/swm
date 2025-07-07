@@ -71,6 +71,25 @@ from tinydb.table import Document
 __version__ = "0.1.0"
 
 
+def suggest_closest_commands(possible_commands:list[str], user_input:str, limit:int):
+    from Levenshtein import distance
+    assert limit >= 1, "Limit must be greater than zero, given %s" % limit
+    ret= possible_commands.copy()
+    ret.sort(key=lambda x: distance(user_input, x, ))
+    ret = ret[:limit]
+    return ret
+
+def extract_possible_commands_from_doc():
+    lines = __doc__.split("/n")
+    lines = [it.strip() for it in lines]
+    ret = [it for it in lines if it.startswith("swm ")]
+    return ret
+
+def show_suggestion_on_wrong_command(user_input:str, limit:int =1):
+    possible_commands = extract_possible_commands_from_doc()
+    closest_commands = suggest_closest_commands(possible_commands=possible_commands, user_input=user_input, limit=limit)
+    print("Did you mean:", *closest_commands, sep="\n\t")
+
 def get_init_complete_path(basedir: str):
     init_flag = os.path.join(basedir, ".INITIAL_BINARIES_DOWNLOADED")
     return init_flag
