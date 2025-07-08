@@ -1,4 +1,6 @@
-"""SWM - Scrcpy Window Manager
+__doc__ = (
+    DOCSTRING
+) = """SWM - Scrcpy Window Manager
 
 Usage:
   swm init
@@ -62,7 +64,7 @@ import os
 import platform
 import subprocess
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import omegaconf
 from tinydb import Query, Storage, TinyDB
@@ -71,25 +73,55 @@ from tinydb.table import Document
 __version__ = "0.1.0"
 
 
-def suggest_closest_commands(possible_commands:list[str], user_input:str, limit:int):
-    from Levenshtein import distance
+def suggest_closest_commands(possible_commands, user_input: str, limit: int):
+    from fuzzywuzzy import fuzz
+
     assert limit >= 1, "Limit must be greater than zero, given %s" % limit
-    ret= possible_commands.copy()
-    ret.sort(key=lambda x: distance(user_input, x, ))
-    ret = ret[:limit]
+    ret = possible_commands.copy()
+    ret.sort(
+        key=lambda x: -fuzz.token_sort_ratio(
+            user_input,
+            x["matcher"],
+        )
+    )
+    # print("Sorted:", ret)
+    ret = [it["display"] for it in ret[:limit]]
     return ret
+
+
+def remove_option_variable(option: str):
+    words = option.split(" ")
+    ret = []
+    for it in words:
+        it = it.strip()
+        if it:
+            if it[0] not in "([<":
+                ret.append(it)
+    ret = " ".join(ret)
+    return ret
+
 
 def extract_possible_commands_from_doc():
-    assert __doc__, "No docstring found"
-    lines = __doc__.split("/n")
+    assert DOCSTRING, "No docstring found"
+    lines = DOCSTRING.split("\n")
     lines = [it.strip() for it in lines]
-    ret = [it for it in lines if it.startswith("swm ")]
+    ret = [
+        dict(matcher=remove_option_variable(it), display=it)
+        for it in lines
+        if it.startswith("swm ")
+    ]
     return ret
 
-def show_suggestion_on_wrong_command(user_input:str, limit:int =1):
+
+def show_suggestion_on_wrong_command(user_input: str, limit: int = 1):
+    # print("User input:", user_input)
     possible_commands = extract_possible_commands_from_doc()
-    closest_commands = suggest_closest_commands(possible_commands=possible_commands, user_input=user_input, limit=limit)
-    print("Did you mean:", *closest_commands, sep="\n\t")
+    # print("Possible commands:", possible_commands)
+    closest_commands = suggest_closest_commands(
+        possible_commands=possible_commands, user_input=user_input, limit=limit
+    )
+    print("Did you mean:", *closest_commands, sep="\n  ")
+
 
 def get_init_complete_path(basedir: str):
     init_flag = os.path.join(basedir, ".INITIAL_BINARIES_DOWNLOADED")
@@ -518,8 +550,6 @@ class SWMOnDeviceDatabase:
         self.db_path = db_path
         self.storage = functools.partial(ADBStorage, adb_wrapper=adb_wrapper)
         self._db = TinyDB(db_path, storage=self.storage)
-    
-
 
     def write_app_last_used_time(
         self, device_id, app_id: str, last_used_time: datetime
@@ -535,8 +565,8 @@ class SWMOnDeviceDatabase:
             },
             (AppUsage.device_id == device_id) & (AppUsage.app_id == app_id),
         )
-    
-    def update_app_last_used_time(self, device_id:str, app_id:str):
+
+    def update_app_last_used_time(self, device_id: str, app_id: str):
         last_used_time = datetime.now()
         self.write_app_last_used_time(device_id, app_id, last_used_time)
 
@@ -555,7 +585,7 @@ class SWMOnDeviceDatabase:
 
 
 class SWM:
-    def __init__(self, config: omegaconf.DictConfig):
+    def __init__(self, config: Union[omegaconf.DictConfig, omegaconf.ListConfig]):
         self.config = config
         self.cache_dir = config.cache_dir
         self.bin_dir = os.path.join(self.cache_dir, "bin")
@@ -805,11 +835,13 @@ class AppManager:
             use_adb_keyboard=use_adb_keyboard,
             env=env,
         )
-    
-    def update_app_last_used_time_to_db(self, app_id:str):
+
+    def update_app_last_used_time_to_db(self, app_id: str):
         # we cannot update the last used time at device, since it is managed by android
         assert self.swm.current_device, "No current device being set"
-        assert self.swm.on_device_db, "Device '%s' missing on device db" % self.swm.current_device
+        assert self.swm.on_device_db, (
+            "Device '%s' missing on device db" % self.swm.current_device
+        )
         device_id = self.swm.current_device
         self.swm.on_device_db.update_app_last_used_time(device_id, app_id)
 
@@ -824,15 +856,16 @@ class AppManager:
 
     def copy_app_config(self, source_name: str, target_name: str):
         import yaml
+
         if target_name == "default":
             raise ValueError("Target name cannot be 'default'")
         if self.get_app_config_path(target_name):
-            raise ValueError("Target '%s' still exists. Consider using reference?" )
+            raise ValueError("Target '%s' still exists. Consider using reference?")
         if source_name == "default":
             config_yaml_content = self.default_app_config
         elif source_name in self.list_app_config(print_result=False):
             source_config_path = self.get_app_config_path(source_name)
-            with open(source_config_path, 'r') as f:
+            with open(source_config_path, "r") as f:
                 config_yaml_content = f.read()
         ret = yaml.safe_load(config_yaml_content)
         return ret
@@ -843,9 +876,11 @@ class AppManager:
         # both default and custom one could be referred in default config, but custom config cannot refer others
         # if one default config is being renamed as custom config, then all reference shall be flattened
         app_config_yamls = os.listdir(self.app_config_dir)
-        app_config_names = [os.path.splitext(it)[0] for it in app_config_yamls if it.endswith('.yaml')]
+        app_config_names = [
+            os.path.splitext(it)[0] for it in app_config_yamls if it.endswith(".yaml")
+        ]
         if print_result:
-            print("Warning: app config display is not implemented yet") 
+            print("Warning: app config display is not implemented yet")
         return app_config_names
 
     def show_app_config(self, app_name: str):
@@ -854,7 +889,9 @@ class AppManager:
 
     @property
     def app_config_dir(self):
-        return os.path.join(self.swm.cache_dir, "apps") # TODO: had better to separate devices, though. could add suffix to config name, in order to share config
+        return os.path.join(
+            self.swm.cache_dir, "apps"
+        )  # TODO: had better to separate devices, though. could add suffix to config name, in order to share config
 
     def get_app_config_path(self, app_name: str):
         app_config_dir = self.app_config_dir
@@ -862,19 +899,26 @@ class AppManager:
 
         app_config_path = os.path.join(app_config_dir, f"{app_name}.yaml")
         return app_config_path
-    
-    def resolve_app_config_reference(self, ref:str, sources: List[str]=[]): # BUG: if you mark List as "list" it will be resolved into class method "list"
-        if ref == 'default':
-          raise ValueError("Reference cannot be 'default'")
+
+    def resolve_app_config_reference(
+        self, ref: str, sources: List[str] = []
+    ):  # BUG: if you mark List as "list" it will be resolved into class method "list"
+        if ref == "default":
+            raise ValueError("Reference cannot be 'default'")
         if ref in sources:
-          raise ValueError("Loop reference found for %s in %s" % (ref, sources))
+            raise ValueError("Loop reference found for %s in %s" % (ref, sources))
         # this ref must exists
-        assert ref in self.list_app_config(print_result=False), "Reference %s does not exist" % ref
+        assert ref in self.list_app_config(print_result=False), (
+            "Reference %s does not exist" % ref
+        )
         ret = self.get_or_create_app_config(ref, resolve_reference=False)
-        ref_in_ref = ret.get('reference', None)
+        ref_in_ref = ret.get("reference", None)
         if ref_in_ref:
-          ret = self.resolve_app_config_reference(ref=ref_in_ref,sources=sources+[ref])
+            ret = self.resolve_app_config_reference(
+                ref=ref_in_ref, sources=sources + [ref]
+            )
         return ret
+
     def get_or_create_app_config(self, app_name: str, resolve_reference=True) -> Dict:
         import yaml
 
@@ -893,9 +937,9 @@ class AppManager:
         with open(app_config_path, "r") as f:
             ret = yaml.safe_load(f)
         if resolve_reference:
-          ref = ret.get("reference", None)
-          if ref:
-            ret = self.resolve_app_config_reference(ref, sources=[app_name])
+            ref = ret.get("reference", None)
+            if ref:
+                ret = self.resolve_app_config_reference(ref, sources=[app_name])
         return ret
 
     @property
@@ -1269,7 +1313,7 @@ class SessionManager:
             # Additional window positioning would go here
 
     def delete(self, session_name: str) -> bool:
-        session_path=self.get_session_path(session_name)
+        session_path = self.get_session_path(session_name)
         if os.path.exists(session_path):
             os.remove(session_path)
             return True
@@ -1516,11 +1560,8 @@ class AdbWrapper:
         return self.execute_su_cmd(cmd, **kwargs)
 
     def enable_and_set_specific_keyboard(self, keyboard_activity_name: str):
-        self.execute_su_cmd(
-            "ime enable %s" % keyboard_activity_name
-        )
+        self.execute_su_cmd("ime enable %s" % keyboard_activity_name)
         self.execute_su_cmd("ime set %s" % keyboard_activity_name)
-
 
     def enable_and_set_adb_keyboard(self):
         keyboard_activity_name = "com.android.adbkeyboard/.AdbIME"
@@ -1637,7 +1678,9 @@ output_icon_path = "{png_path}"
         return self.check_output(["shell", "getprop", "ro.product.cpu.abi"])
 
     def list_device_ids(
-        self, status_blacklist:list[str] = ["unauthorized", "fastboot"], with_status: bool = False
+        self,
+        status_blacklist: list[str] = ["unauthorized", "fastboot"],
+        with_status: bool = False,
     ) -> List:
         # TODO: detect and filter unauthorized and abnormal devices
         output = self.check_output(["devices"])
@@ -1653,7 +1696,10 @@ output_icon_path = "{png_path}"
                     else:
                         devices.append(device_id)
                 else:
-                    print("Warning: device %s status '%s' is in blacklist %s thus skipped" % (device_id, device_status, status_blacklist))
+                    print(
+                        "Warning: device %s status '%s' is in blacklist %s thus skipped"
+                        % (device_id, device_status, status_blacklist)
+                    )
         return devices
 
     def list_device_detailed(self) -> List[str]:
@@ -1910,13 +1956,14 @@ class ScrcpyWrapper:
                 print("Reverting to previous ime")
                 self.adb_wrapper.enable_and_set_specific_keyboard(previous_ime)
 
-    def check_app_in_display(self, app_id:str, display_id:int):
+    def check_app_in_display(self, app_id: str, display_id: int):
         raise NotImplementedError("TODO")
 
-    def scrcpy_app_monitor(self, app_id:str, display_id:int, proc_pid:int):
+    def scrcpy_app_monitor(self, app_id: str, display_id: int, proc_pid: int):
         import signal
         import time
         import psutil
+
         while True:
             time.sleep(1)
             app_in_display = self.check_app_in_display(app_id, display_id)
@@ -1926,34 +1973,43 @@ class ScrcpyWrapper:
             if not app_in_display:
                 # kill scrcpy
                 os.kill(proc_pid, signal.SIGKILL)
-    
-    def start_sidecar_scrcpy_app_monitor_thread(self, app_id:str, display_id:int, scrcpy_pid:int):
+
+    def start_sidecar_scrcpy_app_monitor_thread(
+        self, app_id: str, display_id: int, scrcpy_pid: int
+    ):
         import threading
+
         # configure this thread with daemon=True
         target = self.scrcpy_app_monitor
-        thread = threading.Thread(target=target,kwargs = dict(app_id=app_id, display_id=display_id, scrcpy_pid=scrcpy_pid), daemon=True)
+        thread = threading.Thread(
+            target=target,
+            kwargs=dict(app_id=app_id, display_id=display_id, scrcpy_pid=scrcpy_pid),
+            daemon=True,
+        )
         thread.start()
 
     def generate_swm_scrcpy_proc_pid_path(self):
         import uuid
+
         unique_id = str(uuid.uuid4())
-        filename =  "%s.txt" % unique_id
+        filename = "%s.txt" % unique_id
         ret = os.path.join(self.swm_scrcpy_proc_pid_basedir, filename)
         return ret
-    
+
     @property
     def swm_scrcpy_proc_pid_basedir(self):
         ret = os.path.join(self.config.cache_dir, "swm_scrcpy_proc_pid")
         if not os.path.exists(ret):
             os.makedirs(ret, exist_ok=True)
         return ret
-    
+
     @property
     def has_swm_process_running(self):
         return len(self.get_running_swm_managed_scrcpy_pids()) > 0
-    
+
     def get_running_swm_managed_scrcpy_pids(self):
         import psutil
+
         ret = []
         for it in os.listdir(self.swm_scrcpy_proc_pid_basedir):
             path = os.path.join(self.swm_scrcpy_proc_pid_basedir, it)
@@ -1961,7 +2017,7 @@ class ScrcpyWrapper:
                 with open(path, "r") as f:
                     pid = f.read()
                     pid = int(pid)
-                    if  psutil.pid_exists(pid):
+                    if psutil.pid_exists(pid):
                         ret.append(pid)
         return ret
 
@@ -2067,9 +2123,20 @@ def override_system_excepthook(
 
 
 def parse_args():
-    from docopt import docopt
+    from docopt import docopt, DocoptExit
+    import sys
 
-    return docopt(__doc__, version=f"SWM {__version__}", options_first=True)
+    try:
+        return docopt(__doc__, version=f"SWM {__version__}", options_first=True)
+    except DocoptExit:
+        # print the docstring
+        print(DOCSTRING)
+        # must be something wrong with the arguments
+        argv = sys.argv
+        user_input = "swm " + (" ".join(argv[1:]))
+        show_suggestion_on_wrong_command(user_input)
+        # TODO: configure "limit" in swm config yaml
+    exit(1)
 
 
 def main():
@@ -2084,7 +2151,7 @@ def main():
     # Parse CLI arguments
     args = parse_args()
 
-    config_path = args.get("--config")
+    config_path = args["--config"]
     if config_path:
         print("Using CLI given config path:", config_path)
     else:
@@ -2192,9 +2259,10 @@ def main():
 
         current_device = swm.infer_current_device(default_device)
 
-
         if current_device is not None:
-            device_name = swm.adb_wrapper.get_device_name(current_device) # could fail if status is not "device", such as "fastboot"
+            device_name = swm.adb_wrapper.get_device_name(
+                current_device
+            )  # could fail if status is not "device", such as "fastboot"
             print("Current device name:", device_name)
             swm.set_current_device(current_device)
             swm.load_swm_on_device_db()
@@ -2251,7 +2319,7 @@ def main():
                 # TODO: search with query instead
                 app_id = swm.app_manager.resolve_app_query(query)
                 swm.app_manager.run(
-                    app_id, # type: ignore
+                    app_id,  # type: ignore
                     init_config=init_config,
                     new_display=not no_new_display,
                 )
