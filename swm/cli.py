@@ -80,6 +80,7 @@ def suggest_closest_commands(possible_commands:list[str], user_input:str, limit:
     return ret
 
 def extract_possible_commands_from_doc():
+    assert __doc__, "No docstring found"
     lines = __doc__.split("/n")
     lines = [it.strip() for it in lines]
     ret = [it for it in lines if it.startswith("swm ")]
