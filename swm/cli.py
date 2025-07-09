@@ -51,6 +51,32 @@ Environment variables:
   FZF           Path to FZF binary (overrides SWM  managed FZF)
 """
 
+# TODO: hold the main display lock if it is unlocked, till swm is not connected
+
+# TODO: setup network connection between PC client and on device daemon via:
+# adb forward tcp:<PC_PORT> tcp:<DEVICE_PORT>
+# adb reverse tcp:<DEVICE_PORT> tcp:<PC_PORT>
+# deepseek says "adb forward" is suitable for this scenario
+
+# TODO: figure out the protocol used in scrcpy-server, change resolution on the fly using the protocol, track down the port forwarded per scrcpy session
+# Note: seems scrcpy is not using adb for port forwarding
+# maybe it is communicated via unix socket, via adb shell?
+# android.net.LocalServerSocket
+# adb shell cat /proc/net/unix
+# adb forward tcp:<PC_PORT> localabstract:<ABSTRACT_SOCKET>
+# adb reverse localabstract:<ABSTRACT_SOCKET> tcp:<PC_PORT>
+# scrcpy/app/src/server.c:sc_adb_tunnel_open
+# scrcpy/app/src/adb/adb_tunnel.c:sc_adb_tunnel_open
+# SC_SOCKET_NONE
+
+# adb forward --list
+# adb reverse --list
+# adb forward --remove
+# adb forward --remove-all
+
+# TODO: Mark session with PC signature so we can prompt the user if mismatch, like "This is a remote session from xyz, do you trust this machine?"
+# TODO: Sign session and other files on android device with public key to ensure integrity (using gnupg or something)
+
 # TODO: provide a loadable, editable app alias file in yaml for faster launch
 
 # BUG: cannot paste when screen is locked
@@ -85,6 +111,25 @@ from tinydb import Query, Storage, TinyDB
 from tinydb.table import Document
 
 __version__ = "0.1.0"
+
+
+def start_daemon_thread(target, args=(), kwargs={}):
+    import threading
+
+    thread = threading.Thread(target=target, args=args, kwargs=kwargs, daemon=True)
+    thread.start()
+
+
+def get_first_laddr_port_with_pid(pid: int):
+    # used for finding scrcpy local control port
+    import psutil
+
+    conns = psutil.net_connections()
+    conns = [it for it in conns if it.pid == pid]
+    if len(conns) > 0:
+        laddr = conns[0].laddr
+        ret = getattr(laddr, "port", None)
+        return ret
 
 
 def parse_dumpsys_active_apps(text: str):
@@ -426,15 +471,18 @@ def get_file_content(filepath: str):
     with open(filepath, "r") as f:
         return f.read()
 
-def edit_content(content:str):
+
+def edit_content(content: str):
     import tempfile
-    with tempfile.NamedTemporaryFile(mode='w+') as tmpfile:
+
+    with tempfile.NamedTemporaryFile(mode="w+") as tmpfile:
         tmpfile.write(content)
         tmpfile.flush()
         tmpfile_path = tmpfile.name
         edited_content = edit_or_open_file(tmpfile_path, return_value="content")
         assert type(edited_content) == str
         return edited_content
+
 
 def edit_or_open_file(filepath: str, return_value="edited"):
     print("Editing file:", filepath)
@@ -674,7 +722,9 @@ class SWMOnDeviceDatabase:
 
         if result:
             assert type(result) == Document
-            return result["previous_ime"]
+            ret = result["previous_ime"]
+            assert type(ret) == str
+            return ret
 
     def write_app_last_used_time(
         self, device_id, app_id: str, last_used_time: datetime
@@ -758,7 +808,7 @@ class SWM:
         # ref: https://stackoverflow.com/questions/63333696/which-is-the-first-version-of-android-that-support-multi-display
         # multi display with different resolution: 9
         # ref: https://source.android.com/docs/core/display/multi_display/displays
-        minimum_android_version_for_multi_displays = 8
+        minimum_android_version_for_multi_displays = 10  # from source code of scrcpy
         android_version = self.adb_wrapper.get_android_version()
         print("Android version:", android_version)
         if android_version < minimum_android_version_for_multi_displays:
@@ -950,10 +1000,10 @@ class AppManager:
         clipboard_may_malfunction = False
         if "_locked" in display_and_lock_state:
             clipboard_may_malfunction = True
-            print("Warning: Device is locked")
+            print("Device is locked")
         if "off_" in display_and_lock_state:
             clipboard_may_malfunction = True
-            print("Warning: Main display is off")
+            print("Main display is off")
         if display_and_lock_state == "unknown":
             clipboard_may_malfunction = True
             print("Warning: Device display and lock state unknown")
@@ -961,7 +1011,7 @@ class AppManager:
             print("Warning: Clipboard may malfunction")
         return clipboard_may_malfunction
 
-    def get_app_config(self, config_name:str):
+    def get_app_config(self, config_name: str):
         assert self.check_app_config_existance(config_name)
         app_config = self.get_or_create_app_config(config_name)
         return app_config
@@ -1044,16 +1094,16 @@ class AppManager:
             raise ValueError("Target name cannot be 'default'")
         if self.check_app_config_existance(target_name):
             raise ValueError("Target '%s' still exists. Consider using reference?")
-        
+
         if source_name == "default":
             config_yaml_content = self.default_app_config
         elif source_name in self.list_app_config(print_result=False):
             source_config_path = self.get_app_config_path(source_name)
-            
+
             config_yaml_content = self.swm.adb_wrapper.read_file(source_config_path)
         else:
             raise ValueError("Source '%s' does not exist" % source_name)
-        
+
         target_config_path = self.get_app_config_path(target_name)
         self.swm.adb_wrapper.write_file(target_config_path, config_yaml_content)
 
@@ -1105,12 +1155,12 @@ class AppManager:
 
         app_config_path = os.path.join(app_config_dir, f"{app_name}.yaml")
         return app_config_path
-    
-    def check_app_config_existance(self, config_name:str):
+
+    def check_app_config_existance(self, config_name: str):
         config_path = self.get_app_config_path(config_name)
         ret = self.swm.adb_wrapper.test_path_existance(config_path)
         return ret
-    
+
     def resolve_app_config_reference(
         self, ref: str, sources: List[str] = []
     ):  # BUG: if you mark List as "list" it will be resolved into class method "list"
@@ -1132,6 +1182,7 @@ class AppManager:
 
     def get_or_create_app_config(self, app_name: str, resolve_reference=True) -> Dict:
         import yaml
+
         default_config_obj = yaml.safe_load(self.default_app_config)
 
         if app_name == "default":  # not creating it
@@ -1470,9 +1521,10 @@ class SessionManager:
         return session_names
 
     def save(self, session_name: str):
-        # TODO: store all running app launch parameters at "swm_scrcpy_proc_pid_path", then we read and merge them here 
+        # TODO: store all running app launch parameters at "swm_scrcpy_proc_pid_path", then we read and merge them here
         # TODO: must verify the process is alive by its pid, or exclude it
         import time
+
         assert session_name != "default", "Cannot save a session named 'default'"
 
         device = self.swm.current_device
@@ -1482,12 +1534,12 @@ class SessionManager:
             "timestamp": time.time(),
             "device": device,
             # "windows": self._get_window_states(),
-            "windows": self.get_window_states_for_device_by_scrcpy_pid_files(device)
+            "windows": self.get_window_states_for_device_by_scrcpy_pid_files(device),
         }
 
         self._save_session_data(session_name, session_data)
-    
-    def get_window_states_for_device_by_scrcpy_pid_files(self, device_id:str):
+
+    def get_window_states_for_device_by_scrcpy_pid_files(self, device_id: str):
         self.swm.scrcpy_wrapper.swm_scrcpy_proc_pid_basedir
         pid_files = ...
 
@@ -1601,10 +1653,10 @@ class AdbWrapper:
         self.remote_swm_dir = self.config.android_session_storage_path
         self.initialize()
         self.remote = self
-    
-    def listdir(self, path:str):
+
+    def listdir(self, path: str):
         assert self.test_path_existance(path)
-        output = self.check_output_shell(["ls" , '-1', path])
+        output = self.check_output_shell(["ls", "-1", path])
         ret = split_lines(output)
         return ret
 
@@ -2020,8 +2072,8 @@ output_icon_path = "{png_path}"
             if line.startswith("package:"):
                 packages.append(line[len("package:") :].strip())
         return packages
-    
-    def ensure_dir_existance(self, dir_path:str):
+
+    def ensure_dir_existance(self, dir_path: str):
         if self.test_path_existance(dir_path):
             return
         print("Directory %s not found, creating it now..." % dir_path)
@@ -2157,6 +2209,22 @@ class ScrcpyWrapper:
         output = subprocess.check_output(cmd).decode("utf-8")
         return output
 
+    def start_sidecar_scrcpy_monitor_control_port(self, proc: subprocess.Popen):
+        import time
+
+        proc_pid = proc.pid
+
+        def monitor_control_port():
+            while True:
+                time.sleep(1)
+                port = get_first_laddr_port_with_pid(proc_pid)
+                if port:
+                    print("Control port:", port)
+                    setattr(proc, "control_port", port)
+                    break
+
+        start_daemon_thread(monitor_control_port)
+
     def launch_app(
         self,
         package_name: str,
@@ -2222,7 +2290,11 @@ class ScrcpyWrapper:
         )
         proc_pid = proc.pid
 
+        print("Scrcpy PID:", proc_pid)
+
         self.start_sidecar_scrcpy_app_monitor_thread(package_name, proc)
+
+        self.start_sidecar_scrcpy_monitor_control_port(proc)
 
         if new_display:
             self.start_sidecar_scrcpy_stdout_monitor_thread(proc)
@@ -2303,8 +2375,6 @@ class ScrcpyWrapper:
         return app_is_foreground and app_is_in_display
 
     def start_sidecar_scrcpy_stdout_monitor_thread(self, proc: subprocess.Popen):
-        import threading
-
         assert proc.stdout
         proc_stdout = proc.stdout
 
@@ -2317,8 +2387,7 @@ class ScrcpyWrapper:
                     display_id = int(display_id)
                     setattr(proc, "display_id", display_id)
 
-        thread = threading.Thread(target=monitor_stdout_and_set_attribute, daemon=True)
-        thread.start()
+        start_daemon_thread(monitor_stdout_and_set_attribute)
 
     def scrcpy_app_monitor(self, app_id: str, proc: subprocess.Popen):
         # import signal
@@ -2333,7 +2402,9 @@ class ScrcpyWrapper:
                 display_id = getattr(proc, "display_id")
                 break
 
-        last_app_in_display = app_in_display = self.check_app_in_display(app_id, display_id)
+        last_app_in_display = app_in_display = self.check_app_in_display(
+            app_id, display_id
+        )
         while True:
             last_app_in_display = app_in_display
             time.sleep(1)
@@ -2341,7 +2412,9 @@ class ScrcpyWrapper:
             process_alive = psutil.pid_exists(proc_pid)
             if not process_alive:
                 break
-            if last_app_in_display == True and app_in_display == False: # app terminated
+            if (
+                last_app_in_display == True and app_in_display == False
+            ):  # app terminated
                 proc.terminate()
                 # os.kill(proc_pid, signal.SIGKILL)
                 break
@@ -2366,16 +2439,10 @@ class ScrcpyWrapper:
     def start_sidecar_scrcpy_app_monitor_thread(
         self, app_id: str, proc: subprocess.Popen
     ):
-        import threading
-
         # configure this thread with daemon=True
-        target = self.scrcpy_app_monitor
-        thread = threading.Thread(
-            target=target,
-            kwargs=dict(app_id=app_id, proc=proc),
-            daemon=True,
+        start_daemon_thread(
+            target=self.scrcpy_app_monitor, kwargs=dict(app_id=app_id, proc=proc)
         )
-        thread.start()
 
     def generate_swm_scrcpy_proc_pid_path(self):
         import uuid
@@ -2735,7 +2802,7 @@ def main():
             if args["list"]:
                 sessions = swm.session_manager.list()
                 print("Session saved on device %s:" % swm.current_device)
-                print("\t"+("\n\t".join(sessions)))
+                print("\t" + ("\n\t".join(sessions)))
             elif args["search"]:
                 session_name = swm.session_manager.search()
                 opt = prompt_for_option_selection(
