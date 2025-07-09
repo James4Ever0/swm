@@ -51,6 +51,8 @@ Environment variables:
   FZF           Path to FZF binary (overrides SWM  managed FZF)
 """
 
+# BUG: cannot paste when screen is locked
+
 # TODO: suggest possible command completions when the user types a wrong command, using levenshtein
 
 # TODO: when the main screen is locked, clipboard may fail to traverse. warn the user and ask to unlock the screen. (or automatically unlock the screen, if possible)
@@ -81,8 +83,33 @@ from tinydb.table import Document
 
 __version__ = "0.1.0"
 
+def grep_lines(text:str, whitelist:list[str] = [], blacklist:list[str] = []):
+    ret = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if whitelist and not any(wh in line for wh in whitelist):
+            continue
+        if blacklist and any(bl in line for bl in blacklist):
+            continue
+        ret.append(line)
+    return ret
 
-def suggest_closest_commands(possible_commands:list[dict], user_input: str, limit: int):
+def parse_dumpsys_keyvalue_output(output: str):
+    lines = output.splitlines()
+    ret = {}
+    for line in lines:
+        line = line.strip()
+        if line:
+            key, value = line.split("=", 1)
+            ret[key.strip()] = value.strip()
+    return ret
+
+
+def suggest_closest_commands(
+    possible_commands: list[dict], user_input: str, limit: int
+):
     from fuzzywuzzy import fuzz
 
     assert limit >= 1, "Limit must be greater than zero, given %s" % limit
@@ -496,7 +523,12 @@ def search_or_obtain_binary_path_from_environmental_variable_or_download(
 def download_binary_into_cache_dir_and_return_path(
     cache_dir: str, bin_type: str, bin_name: str
 ) -> str:
-    # Placeholder implementation - would download the binary
+
+    raise NotImplementedError(
+        "Downloading is not implemented yet for %s-%s-%s"
+        % (*get_system_and_architecture(), bin_name)
+    )
+
     bin_dir = os.path.join(cache_dir, bin_type)
     os.makedirs(bin_dir, exist_ok=True)
 
@@ -504,10 +536,6 @@ def download_binary_into_cache_dir_and_return_path(
     bin_path = os.path.join(bin_dir, bin_name)
     if platform.system() == "Windows":
         bin_path += ".exe"
-
-    print(f"WARNING: Creating placeholder binary at {bin_path}")
-    with open(bin_path, "w") as f:
-        f.write("#!/bin/sh\necho 'Placeholder binary for SWM'")
 
     if platform.system() != "Windows":
         os.chmod(bin_path, 0o755)
@@ -693,8 +721,10 @@ def load_and_print_as_dataframe(
     for key, value in additional_fields.items():
         if value is False:
             df.drop(key, axis=1, inplace=True)
-    if 'last_used_time' in df.columns:
-        df['last_used_time'] = df['last_used_time'].transform(lambda x: x.strftime("%Y-%m-%d %H:%M"))
+    if "last_used_time" in df.columns:
+        df["last_used_time"] = df["last_used_time"].transform(
+            lambda x: x.strftime("%Y-%m-%d %H:%M")
+        )
     formatted_output = df.to_string(index=False)
     if show:
         print(formatted_output)
@@ -733,7 +763,7 @@ class AppManager:
     # let's mark it rooted device only.
     # we get the package path, data path and get last modification date of these files
     # or use java to access UsageStats
-    def get_app_last_used_time_from_device(self, app_id:str):
+    def get_app_last_used_time_from_device(self, app_id: str):
         data_path = "/data/data/%s" % app_id
         if self.swm.adb_wrapper.test_path_existance_su(data_path):
             cmd = "ls -Artls '%s' | tail -n 1 | awk '{print $7,$8}'" % data_path
@@ -749,7 +779,7 @@ class AppManager:
             device_id, package_id
         )
         return last_used_time
-    
+
     def write_app_last_used_time_to_db(self, package_id: str, last_used_time: datetime):
         assert self.swm.on_device_db
         device_id = self.swm.current_device
@@ -809,9 +839,26 @@ class AppManager:
     def check_app_existance(self, app_id):
         return self.swm.adb_wrapper.check_app_existance(app_id)
 
+    def check_clipboard_malfunction(self):
+        display_and_lock_state = self.swm.adb_wrapper.get_display_and_lock_state()
+        clipboard_may_malfunction = False
+        if "_locked" in display_and_lock_state:
+            clipboard_may_malfunction = True
+            print("Warning: Device is locked")
+        if "off_" in display_and_lock_state:
+            clipboard_may_malfunction = True
+            print("Warning: Main display is off")
+        if display_and_lock_state == "unknown":
+            clipboard_may_malfunction = True
+            print("Warning: Device display and lock state unknown")
+        if clipboard_may_malfunction:
+            print("Warning: Clipboard may malfunction")
+        return clipboard_may_malfunction
+
     def run(
         self, app_id: str, init_config: Optional[str] = None, new_display: bool = True
     ):
+        self.check_clipboard_malfunction()
         if not self.check_app_existance(app_id):
             raise NoAppError(
                 "Applicaion %s does not exist on device %s"
@@ -1427,15 +1474,22 @@ class AdbWrapper:
     def get_display_density(self, display_id):
         # adb shell wm density -d <display_id>
         output = self.check_output(["shell", "wm", "density", "-d", display_id])
+    
+    def check_app_in_display(self, app_id, display_id):
+        display_focus = self.get_display_current_focus()[display_id]
+        ret = app_id in display_focus
+        return ret
 
     def get_display_current_focus(self):
         # adb shell dumpsys window | grep "ime" | grep display
         # adb shell dumpsys window displays | grep "mCurrentFocus"
+        # adb shell dumpsys window displays | grep -E "mDisplayId|mFocusedApp"
         output = self.check_output(["shell", "dumpsys", "window", "displays"])
+        lines = grep_lines(output, ["mDisplayId","mFocusedApp"])
         # we can get display id and current focused app per display here
         # just need to parse section "WINDOW MANAGER DISPLAY CONTENTS (dumpsys window displays)"
 
-    def check_app_is_foreground(self, app_id):
+    def check_app_is_foreground(self, app_id:str):
         # convert the binary output from "wm dump-visible-window-views" into ascii byte by byte, those not viewable into "."
         # adb shell wm dump-visible-window-views | xxd | grep <app_id>
 
@@ -1449,13 +1503,40 @@ class AdbWrapper:
             return True
         return False
 
-    def check_if_screen_unlocked(self):
-        output = self.check_output(["shell", "dumpsys", "power"])
+    def get_display_and_lock_state(self):
         # reference: https://stackoverflow.com/questions/35275828/is-there-a-way-to-check-if-android-device-screen-is-locked-via-adb
         # adb shell dumpsys power | grep 'mHolding'
         # If both are false, the display is off.
         # If mHoldingWakeLockSuspendBlocker is false, and mHoldingDisplaySuspendBlocker is true, the display is on, but locked.
         # If both are true, the display is on.
+        output = self.check_output(
+            ["shell", "dumpsys", "power"]
+        )
+        lines = grep_lines(output, ["mHolding"])
+        data = parse_dumpsys_keyvalue_output("\n".join(lines))
+        if (
+            data.get("mHoldingWakeLockSuspendBlocker") == "false"
+            and data.get("mHoldingDisplaySuspendBlocker") == "false"
+        ):
+            ret = "off_locked"
+        elif (
+            data.get("mHoldingWakeLockSuspendBlocker") == "true"
+            and data.get("mHoldingDisplaySuspendBlocker") == "true"
+        ):
+            ret = "on_unlocked"
+        elif (
+            data.get("mHoldingWakeLockSuspendBlocker") == "true"
+            and data.get("mHoldingDisplaySuspendBlocker") == "false"
+        ):
+            ret = "on_locked"
+        elif (
+            data.get("mHoldingWakeLockSuspendBlocker") == "false"
+            and data.get("mHoldingDisplaySuspendBlocker") == "true"
+        ):
+            ret = "off_unlocked"
+        else:
+            ret = "unknown"
+        return ret
 
     def adb_keyboard_input_text(self, text: str):
         # adb shell am broadcast -a ADB_INPUT_B64 --es msg `echo -n '你好' | base64`
@@ -1504,7 +1585,7 @@ class AdbWrapper:
         if result.returncode == 0:
             return True
         return False
-    
+
     def test_path_existance_su(self, remote_path: str):
         cmd = "test -e '%s'" % remote_path
         result = self.execute_su_cmd(cmd, check=False)
@@ -1995,7 +2076,14 @@ class ScrcpyWrapper:
                 self.adb_wrapper.enable_and_set_specific_keyboard(previous_ime)
 
     def check_app_in_display(self, app_id: str, display_id: int):
-        raise NotImplementedError("TODO")
+        # raise NotImplementedError("TODO")
+        app_is_foreground = self.adb_wrapper.check_app_is_foreground(app_id)
+        app_is_in_display = self.adb_wrapper.check_app_in_display(app_id, display_id)
+        if not app_is_foreground:
+            print("App %s is not in foreground" % app_id)
+        if not app_is_in_display:
+            print("App %s is not in display %s" % (app_id, display_id))
+        return app_is_foreground and app_is_in_display
 
     def scrcpy_app_monitor(self, app_id: str, display_id: int, proc_pid: int):
         import signal
@@ -2160,7 +2248,7 @@ def override_system_excepthook(
     sys.excepthook = custom_excepthook
 
 
-def parse_args(cli_suggestion_limit:int):
+def parse_args(cli_suggestion_limit: int):
     from docopt import docopt, DocoptExit
     import sys
 
@@ -2186,7 +2274,8 @@ def main():
     SWM_CACHE_DIR = os.environ.get("SWM_CACHE_DIR", default_cache_dir)
     # TODO: Include environment variable documentation into help and error message
     os.makedirs(SWM_CACHE_DIR, exist_ok=True)
-    CLI_SUGGESION_LIMIT=os.environ.get('SWM_CLI_SUGGESION_LIMIT', 1)
+    CLI_SUGGESION_LIMIT = os.environ.get("SWM_CLI_SUGGESION_LIMIT", 1)
+    CLI_SUGGESION_LIMIT = int(CLI_SUGGESION_LIMIT)
     # Parse CLI arguments
     args = parse_args(CLI_SUGGESION_LIMIT)
 
@@ -2350,9 +2439,7 @@ def main():
             elif args["most-used"]:
                 limit = args.get("<count>", 10)
                 limit = int(limit)
-                swm.app_manager.list(
-                    most_used=limit, print_formatted=True
-                )
+                swm.app_manager.list(most_used=limit, print_formatted=True)
             elif args["run"]:
                 no_new_display = args["no-new-display"]
                 query = args["<query>"]
@@ -2374,6 +2461,8 @@ def main():
                 elif args["show-default"]:
                     swm.app_manager.show_app_config("default")
                 elif args["edit"]:
+                    if config_name == "default":
+                        raise ValueError("Cannot edit default config")
                     swm.app_manager.edit_app_config(config_name)
                 elif args["copy"]:
                     swm.app_manager.copy_app_config(
