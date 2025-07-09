@@ -51,6 +51,8 @@ Environment variables:
   FZF           Path to FZF binary (overrides SWM  managed FZF)
 """
 
+# TODO: provide a loadable, editable app alias file in yaml for faster launch
+
 # BUG: cannot paste when screen is locked
 # TODO: unlock the screen automatically using user provided scripts, note down the success rate, last success time, and last failure time
 
@@ -944,6 +946,7 @@ class AppManager:
 
     def check_clipboard_malfunction(self):
         display_and_lock_state = self.swm.adb_wrapper.get_display_and_lock_state()
+        print("Display and lock state: %s" % display_and_lock_state)
         clipboard_may_malfunction = False
         if "_locked" in display_and_lock_state:
             clipboard_may_malfunction = True
@@ -966,6 +969,7 @@ class AppManager:
     def run(
         self, app_id: str, init_config: Optional[str] = None, new_display: bool = True
     ):
+        # TODO: recreate the scrcpy instance if it is exited abnormally, such as app closed on device
         self.check_clipboard_malfunction()
         if not self.check_app_existance(app_id):
             raise NoAppError(
@@ -1458,24 +1462,34 @@ class SessionManager:
 
     def list(self) -> List[str]:
         session_json_paths = [
-            f for f in os.listdir(self.session_dir) if f.endswith(".json")
+            f for f in self.adb_wrapper.listdir(self.session_dir) if f.endswith(".json")
         ]
         session_names = [os.path.splitext(it)[0] for it in session_json_paths]
-        session_names.append("default")
+        # session_names.append("default")
         # TODO: no one can save a session named "default", or one may customize this behavior through swm pc/android config, somehow allow this to happen
         return session_names
 
     def save(self, session_name: str):
+        # TODO: store all running app launch parameters at "swm_scrcpy_proc_pid_path", then we read and merge them here 
+        # TODO: must verify the process is alive by its pid, or exclude it
         import time
+        assert session_name != "default", "Cannot save a session named 'default'"
 
+        device = self.swm.current_device
+        print("Saving session for device:", device)
         # Get current window positions and app states
         session_data = {
             "timestamp": time.time(),
-            "device": self.swm.current_device,
-            "windows": self._get_window_states(),
+            "device": device,
+            # "windows": self._get_window_states(),
+            "windows": self.get_window_states_for_device_by_scrcpy_pid_files(device)
         }
 
         self._save_session_data(session_name, session_data)
+    
+    def get_window_states_for_device_by_scrcpy_pid_files(self, device_id:str):
+        self.swm.scrcpy_wrapper.swm_scrcpy_proc_pid_basedir
+        pid_files = ...
 
     def exists(self, session_name: str) -> bool:
         session_path = self.get_session_path(session_name)
@@ -1632,7 +1646,7 @@ class AdbWrapper:
             return ret
 
     def check_app_in_display(self, app_id: str, display_id: int):
-        display_focus = self.get_display_current_focus()[display_id]
+        display_focus = self.get_display_current_focus().get(display_id, "")
         ret = (app_id + "/") in (display_focus + "/")
         return ret
 
@@ -2156,6 +2170,7 @@ class ScrcpyWrapper:
     ):
         import signal
         import psutil
+        import json
 
         args = []
 
@@ -2225,7 +2240,10 @@ class ScrcpyWrapper:
             # write the pid to the path
             swm_scrcpy_proc_pid_path = self.generate_swm_scrcpy_proc_pid_path()
             with open(swm_scrcpy_proc_pid_path, "w") as f:
-                f.write(str(proc_pid))
+                data = dict(pid=proc_pid)
+                content_data = json.dumps(data, indent=4, ensure_ascii=False)
+                f.write(content_data)
+                # TODO: write additional launch parameters here so we can create a session based on these files
             for line in proc.stderr:
                 captured_line = line.strip()
                 if self.config.verbose:
@@ -2716,7 +2734,8 @@ def main():
         elif args["session"]:
             if args["list"]:
                 sessions = swm.session_manager.list()
-                print("\n".join(sessions))
+                print("Session saved on device %s:" % swm.current_device)
+                print("\t"+("\n\t".join(sessions)))
             elif args["search"]:
                 session_name = swm.session_manager.search()
                 opt = prompt_for_option_selection(
