@@ -88,11 +88,13 @@ __version__ = "0.1.0"
 def parse_dumpsys_active_apps(text: str):
     ret = {"foreground": [], "focused": []}
     lines = grep_lines(text, ["ResumedActivity"])
+    # print("Lines:", lines)
     for it in lines:
-        if it.startswith("ResumedActivity="):
-            ret["foreground"].append(extract_app_id_from_activity_record(it))
-        elif it.startswith("topResumedActivity="):
+        if it.startswith("ResumedActivity:"):
             ret["focused"].append(extract_app_id_from_activity_record(it))
+        elif it.startswith("topResumedActivity="):
+            ret["foreground"].append(extract_app_id_from_activity_record(it))
+    # print("Ret:", ret)
     return ret
 
 
@@ -422,6 +424,15 @@ def get_file_content(filepath: str):
     with open(filepath, "r") as f:
         return f.read()
 
+def edit_content(content:str):
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w+') as tmpfile:
+        tmpfile.write(content)
+        tmpfile.flush()
+        tmpfile_path = tmpfile.name
+        edited_content = edit_or_open_file(tmpfile_path, return_value="content")
+        assert type(edited_content) == str
+        return edited_content
 
 def edit_or_open_file(filepath: str, return_value="edited"):
     print("Editing file:", filepath)
@@ -737,6 +748,23 @@ class SWM:
         self.adb_wrapper.set_device(device_id)
         self.scrcpy_wrapper.set_device(device_id)
 
+        # now check for android version
+        self.check_android_version()
+
+    def check_android_version(self):
+        # multi display: 8
+        # ref: https://stackoverflow.com/questions/63333696/which-is-the-first-version-of-android-that-support-multi-display
+        # multi display with different resolution: 9
+        # ref: https://source.android.com/docs/core/display/multi_display/displays
+        minimum_android_version_for_multi_displays = 8
+        android_version = self.adb_wrapper.get_android_version()
+        print("Android version:", android_version)
+        if android_version < minimum_android_version_for_multi_displays:
+            raise RuntimeError(
+                "Android version must be %s or higher"
+                % minimum_android_version_for_multi_displays
+            )
+
     def get_device_architecture(self) -> str:
         return self.adb_wrapper.get_device_architecture()
 
@@ -930,6 +958,11 @@ class AppManager:
             print("Warning: Clipboard may malfunction")
         return clipboard_may_malfunction
 
+    def get_app_config(self, config_name:str):
+        assert self.check_app_config_existance(config_name)
+        app_config = self.get_or_create_app_config(config_name)
+        return app_config
+
     def run(
         self, app_id: str, init_config: Optional[str] = None, new_display: bool = True
     ):
@@ -942,7 +975,10 @@ class AppManager:
         # TODO: memorize the last scrcpy run args, by default in swm config
         # Get app config
         env = {}
-        app_config = self.get_or_create_app_config(app_id)
+        if init_config:
+            app_config = self.get_app_config(init_config)
+        else:
+            app_config = self.get_or_create_app_config(app_id)
         use_adb_keyboard = app_config.get("use_adb_keyboard", False)
         if use_adb_keyboard:
             self.install_and_use_adb_keyboard()
@@ -991,38 +1027,60 @@ class AppManager:
         print(f"Editing config for {app_name}")
         app_config_path = self.get_app_config_path(app_name)
         self.get_or_create_app_config(app_name)
-        ret = edit_or_open_file(app_config_path)
+        content = self.swm.adb_wrapper.read_file(app_config_path)
+        edited_content = edit_content(content)
+        ret = edited_content != content
+        if ret:
+            self.swm.adb_wrapper.write_file(app_config_path, edited_content)
         assert type(ret) == bool
         return ret
 
     def copy_app_config(self, source_name: str, target_name: str):
-        import yaml
-
         if target_name == "default":
             raise ValueError("Target name cannot be 'default'")
-        if self.get_app_config_path(target_name):
+        if self.check_app_config_existance(target_name):
             raise ValueError("Target '%s' still exists. Consider using reference?")
+        
         if source_name == "default":
             config_yaml_content = self.default_app_config
         elif source_name in self.list_app_config(print_result=False):
             source_config_path = self.get_app_config_path(source_name)
-            with open(source_config_path, "r") as f:
-                config_yaml_content = f.read()
-        ret = yaml.safe_load(config_yaml_content)
-        return ret
+            
+            config_yaml_content = self.swm.adb_wrapper.read_file(source_config_path)
+        else:
+            raise ValueError("Source '%s' does not exist" % source_name)
+        
+        target_config_path = self.get_app_config_path(target_name)
+        self.swm.adb_wrapper.write_file(target_config_path, config_yaml_content)
 
     def list_app_config(self, print_result: bool):
         # display config name, categorize them into two groups: default and custom
         # you may configure the default config of an app to use a custom config
         # both default and custom one could be referred in default config, but custom config cannot refer others
         # if one default config is being renamed as custom config, then all reference shall be flattened
-        app_config_yamls = os.listdir(self.app_config_dir)
+        app_config_yamls = self.swm.adb_wrapper.listdir(self.app_config_dir)
         app_config_names = [
             os.path.splitext(it)[0] for it in app_config_yamls if it.endswith(".yaml")
         ]
         if print_result:
-            print("Warning: app config display is not implemented yet")
+            self.display_app_config(app_config_names)
         return app_config_names
+
+    def display_app_config(self, app_config_names: List[str]):
+        import pandas
+
+        records = []
+        for it in app_config_names:
+            app_exists = self.check_app_existance(it)
+            if app_exists:
+                _type = "app"
+            else:
+                _type = "custom"
+            rec = dict(name=it, type=_type)
+            records.append(rec)
+        df = pandas.DataFrame(records)
+        # now display this dataframe
+        print(df.to_string(index=False))
 
     def show_app_config(self, app_name: str):
         config = self.get_or_create_app_config(app_name)
@@ -1030,17 +1088,25 @@ class AppManager:
 
     @property
     def app_config_dir(self):
-        return os.path.join(
-            self.swm.cache_dir, "apps"
+        device_id = self.swm.current_device
+        assert device_id
+        ret = os.path.join(
+            self.swm.config.android_session_storage_path, "app_config"
         )  # TODO: had better to separate devices, though. could add suffix to config name, in order to share config
+        return ret
 
     def get_app_config_path(self, app_name: str):
         app_config_dir = self.app_config_dir
-        os.makedirs(app_config_dir, exist_ok=True)
+        self.swm.adb_wrapper.ensure_dir_existance(app_config_dir)
 
         app_config_path = os.path.join(app_config_dir, f"{app_name}.yaml")
         return app_config_path
-
+    
+    def check_app_config_existance(self, config_name:str):
+        config_path = self.get_app_config_path(config_name)
+        ret = self.swm.adb_wrapper.test_path_existance(config_path)
+        return ret
+    
     def resolve_app_config_reference(
         self, ref: str, sources: List[str] = []
     ):  # BUG: if you mark List as "list" it will be resolved into class method "list"
@@ -1062,21 +1128,21 @@ class AppManager:
 
     def get_or_create_app_config(self, app_name: str, resolve_reference=True) -> Dict:
         import yaml
+        default_config_obj = yaml.safe_load(self.default_app_config)
 
         if app_name == "default":  # not creating it
-            default_config_yaml = self.default_app_config
-            return yaml.safe_load(default_config_yaml)
+            return default_config_obj
 
         app_config_path = self.get_app_config_path(app_name)
 
-        if not os.path.exists(app_config_path):
+        if not self.swm.adb_wrapper.test_path_existance(app_config_path):
             print("Creating default config for app:", app_name)
             # Write default YAML template with comments
-            with open(app_config_path, "w") as f:
-                f.write(self.default_app_config)
+            self.swm.adb_wrapper.write_file(app_config_path, self.default_app_config)
+            return default_config_obj
 
-        with open(app_config_path, "r") as f:
-            ret = yaml.safe_load(f)
+        yaml_content = self.swm.adb_wrapper.read_file(app_config_path)
+        ret = yaml.safe_load(yaml_content)
         if resolve_reference:
             ref = ret.get("reference", None)
             if ref:
@@ -1521,6 +1587,12 @@ class AdbWrapper:
         self.remote_swm_dir = self.config.android_session_storage_path
         self.initialize()
         self.remote = self
+    
+    def listdir(self, path:str):
+        assert self.test_path_existance(path)
+        output = self.check_output_shell(["ls" , '-1', path])
+        ret = split_lines(output)
+        return ret
 
     def check_has_root(self):
         return self.execute_su_cmd("whoami", check=False).returncode == 0
@@ -1575,6 +1647,7 @@ class AdbWrapper:
         output = self.check_output(["shell", "dumpsys", "window", "displays"])
         lines = grep_lines(output, ["mDisplayId", "mFocusedApp"])
         ret = parse_display_focus(lines)
+        # print("Ret:", ret)
         return ret
 
     def check_app_is_foreground(self, app_id: str):
@@ -1588,6 +1661,7 @@ class AdbWrapper:
         output = self.check_output(["shell", "dumpsys", "activity", "activities"])
         data = parse_dumpsys_active_apps(output)
         foreground_apps = data["foreground"]
+        # print("Foreground apps:", foreground_apps)
         for it in foreground_apps:
             if (app_id + "/") in (it + "/"):
                 return True
@@ -1884,8 +1958,10 @@ output_icon_path = "{png_path}"
             self.push_aapt(aapt_bin_path)
         return aapt_bin_path
 
-    def get_android_version(self) -> str:
-        return self.check_output(["shell", "getprop", "ro.build.version.release"])
+    def get_android_version(self) -> int:
+        ret = self.check_output(["shell", "getprop", "ro.build.version.release"])
+        ret = int(ret)
+        return ret
 
     def get_device_architecture(self) -> str:
         return self.check_output(["shell", "getprop", "ro.product.cpu.abi"])
@@ -1930,13 +2006,16 @@ output_icon_path = "{png_path}"
             if line.startswith("package:"):
                 packages.append(line[len("package:") :].strip())
         return packages
+    
+    def ensure_dir_existance(self, dir_path:str):
+        if self.test_path_existance(dir_path):
+            return
+        print("Directory %s not found, creating it now..." % dir_path)
+        self.create_dirs(dir_path)
 
     def create_swm_dir(self):
         swm_dir = self.remote_swm_dir
-        if self.test_path_existance(swm_dir):
-            return
-        print("On device SWM directory not found, creating it now...")
-        self.create_dirs(swm_dir)
+        self.ensure_dir_existance(swm_dir)
 
     def create_dirs(self, dirpath: str):
         self.execute(["shell", "mkdir", "-p", dirpath])
@@ -2196,9 +2275,9 @@ class ScrcpyWrapper:
                     self.adb_wrapper.enable_and_set_specific_keyboard(previous_ime)
 
     def check_app_in_display(self, app_id: str, display_id: int):
-        # raise NotImplementedError("TODO")
         app_is_foreground = self.adb_wrapper.check_app_is_foreground(app_id)
         app_is_in_display = self.adb_wrapper.check_app_in_display(app_id, display_id)
+
         if not app_is_foreground:
             print("App %s is not in foreground" % app_id)
         if not app_is_in_display:
@@ -2224,7 +2303,7 @@ class ScrcpyWrapper:
         thread.start()
 
     def scrcpy_app_monitor(self, app_id: str, proc: subprocess.Popen):
-        import signal
+        # import signal
         import time
         import psutil
 
@@ -2236,15 +2315,18 @@ class ScrcpyWrapper:
                 display_id = getattr(proc, "display_id")
                 break
 
+        last_app_in_display = app_in_display = self.check_app_in_display(app_id, display_id)
         while True:
+            last_app_in_display = app_in_display
             time.sleep(1)
             app_in_display = self.check_app_in_display(app_id, display_id)
             process_alive = psutil.pid_exists(proc_pid)
             if not process_alive:
                 break
-            if not app_in_display:
-                # kill scrcpy
-                os.kill(proc_pid, signal.SIGKILL)
+            if last_app_in_display == True and app_in_display == False: # app terminated
+                proc.terminate()
+                # os.kill(proc_pid, signal.SIGKILL)
+                break
 
     def get_previous_ime(self):
         adbkeyboard_ime = "com.android.adbkeyboard/.AdbIME"
@@ -2561,20 +2643,7 @@ def main():
             raise NoDeviceError("No available device")
 
         if args["app"]:
-            if args["list"]:
-                update_cache = args[
-                    "update"
-                ]  # cache previous list result (alias, id), but last_used_time is always up-to-date
-                with_type = args["with-type"]
-                swm.app_manager.list(
-                    print_formatted=True,
-                    update_cache=update_cache,
-                    additional_fields=dict(
-                        last_used_time=args["with-last-used-time"],
-                        type_symbol=with_type,
-                    ),
-                )
-            elif args["search"]:
+            if args["search"]:
                 app_id = swm.app_manager.search(index=args["index"])
                 with_type = args["with-type"]
                 if app_id is None:
@@ -2631,7 +2700,19 @@ def main():
                     swm.app_manager.copy_app_config(
                         args["<source_name>"], args["<target_name>"]
                     )
-
+            elif args["list"]:
+                update_cache = args[
+                    "update"
+                ]  # cache previous list result (alias, id), but last_used_time is always up-to-date
+                with_type = args["with-type"]
+                swm.app_manager.list(
+                    print_formatted=True,
+                    update_cache=update_cache,
+                    additional_fields=dict(
+                        last_used_time=args["with-last-used-time"],
+                        type_symbol=with_type,
+                    ),
+                )
         elif args["session"]:
             if args["list"]:
                 sessions = swm.session_manager.list()
