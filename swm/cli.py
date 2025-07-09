@@ -51,6 +51,8 @@ Environment variables:
   FZF           Path to FZF binary (overrides SWM  managed FZF)
 """
 
+# TODO: save session to all devices with the same name, and restore with the same name
+
 # TODO: hold the main display lock if it is unlocked, till swm is not connected
 
 # TODO: setup network connection between PC client and on device daemon via:
@@ -104,7 +106,7 @@ import os
 import platform
 import subprocess
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import omegaconf
 from tinydb import Query, Storage, TinyDB
@@ -118,6 +120,20 @@ def start_daemon_thread(target, args=(), kwargs={}):
 
     thread = threading.Thread(target=target, args=args, kwargs=kwargs, daemon=True)
     thread.start()
+    return thread
+
+def wait_for_all_threads(threads:list):
+    for t in threads:
+        t.join()
+
+
+def format_keyvalue(data: dict):
+    ret = []
+    for k, v in data.items():
+        it = "%s=%s" % (k, v)
+        ret.append(it)
+    ret = ", ".join(ret)
+    return ret
 
 
 def get_first_laddr_port_with_pid(pid: int):
@@ -760,7 +776,7 @@ class SWMOnDeviceDatabase:
 
 
 class SWM:
-    def __init__(self, config: Union[omegaconf.DictConfig, omegaconf.ListConfig]):
+    def __init__(self, config: omegaconf.DictConfig):
         self.config = config
         self.cache_dir = config.cache_dir
         self.bin_dir = os.path.join(self.cache_dir, "bin")
@@ -785,6 +801,44 @@ class SWM:
         self.device_manager = DeviceManager(self)
 
         self.on_device_db = None
+
+    @property
+    def fingerprint(self):
+        import uuid
+
+        if os.path.exists(self._fingerprint_path):
+            with open(self._fingerprint_path, "r") as f:
+                return f.read()
+        else:
+            ret = str(uuid.uuid4())
+            with open(self._fingerprint_path, "w+") as f:
+                f.write(ret)
+            return ret
+
+    @property
+    def _fingerprint_path(self):
+        return os.path.join(self.cache_dir, ".fingerprint")
+
+    @property
+    def _trusted_fingerprints_path(self):
+        return os.path.join(self.cache_dir, ".trusted_fingerprints")
+
+    def trust_fingerprint(self, fingerprint: str):
+        with open(self._trusted_fingerprints_path, "a+") as f:
+            f.write(fingerprint + "\n")
+
+    def check_fingerprint_trusted(self, fingerprint: str):
+        trusted_fingerprints = self.list_trusted_fingerprints()
+        ret = fingerprint in trusted_fingerprints
+        return ret
+
+    def list_trusted_fingerprints(self):
+        ret = []
+        if os.path.exists(self._trusted_fingerprints_path):
+            with open(self._trusted_fingerprints_path, "r") as f:
+                contents = f.read()
+                ret = split_lines(contents)
+        return ret
 
     def load_swm_on_device_db(self):
         db_path = os.path.join(self.config.android_session_storage_path, "db.json")
@@ -1055,10 +1109,10 @@ class AppManager:
 
         # Write last used time to db
         self.update_app_last_used_time_to_db(app_id)
-
         # Execute scrcpy
         self.swm.scrcpy_wrapper.launch_app(
             app_id,
+            init_config=init_config,
             window_params=win,
             scrcpy_args=scrcpy_args,
             title=title,
@@ -1520,6 +1574,17 @@ class SessionManager:
         # TODO: no one can save a session named "default", or one may customize this behavior through swm pc/android config, somehow allow this to happen
         return session_names
 
+    def get_pc_info(self):
+        import socket
+        import getpass
+
+        # Get the current username
+        username = getpass.getuser()
+        hostname = socket.gethostname()
+        fingerprint = self.swm.fingerprint
+        ret = dict(hostname=hostname, user=username, fingerprint=fingerprint)
+        return ret
+
     def save(self, session_name: str):
         # TODO: store all running app launch parameters at "swm_scrcpy_proc_pid_path", then we read and merge them here
         # TODO: must verify the process is alive by its pid, or exclude it
@@ -1528,20 +1593,25 @@ class SessionManager:
         assert session_name != "default", "Cannot save a session named 'default'"
 
         device = self.swm.current_device
+        assert device
         print("Saving session for device:", device)
         # Get current window positions and app states
+        pc = self.get_pc_info()
         session_data = {
             "timestamp": time.time(),
             "device": device,
+            "pc": pc,
             # "windows": self._get_window_states(),
-            "windows": self.get_window_states_for_device_by_scrcpy_pid_files(device),
+            "windows": self.get_window_states_for_device_by_scrcpy_pid_files(),
         }
 
         self._save_session_data(session_name, session_data)
 
-    def get_window_states_for_device_by_scrcpy_pid_files(self, device_id: str):
-        self.swm.scrcpy_wrapper.swm_scrcpy_proc_pid_basedir
-        pid_files = ...
+    def get_window_states_for_device_by_scrcpy_pid_files(self):
+        swm_info_list = (
+            self.swm.scrcpy_wrapper.get_running_swm_managed_scrcpy_info_list()
+        )
+        return swm_info_list
 
     def exists(self, session_name: str) -> bool:
         session_path = self.get_session_path(session_name)
@@ -1570,16 +1640,45 @@ class SessionManager:
             assert type(edited_content) == str
             self.swm.adb_wrapper.write_file(session_path, edited_content)
 
-    def get_session_path(self, session_name):
+    def get_session_path(self, session_name: str):
         session_path = os.path.join(self.session_dir, f"{session_name}.yaml")
         return session_path
 
-    def _save_session_data(self, session_name, session_data):
+    def _save_session_data(self, session_name: str, session_data: dict):
         import yaml
 
         session_path = self.get_session_path(session_name)
         content = yaml.safe_dump(session_data)
         self.swm.adb_wrapper.write_file(session_path, content)
+
+    def check_pc_info(self, session_pc_info: dict):
+        current_pc_info = self.get_pc_info()
+        session_fingerprint = session_pc_info["fingerprint"]
+        current_fingerprint = current_pc_info["fingerprint"]
+        if current_fingerprint == session_fingerprint:
+            return True
+        else:
+            fingerprint_trusted = self.swm.check_fingerprint_trusted(
+                session_fingerprint
+            )
+
+            if fingerprint_trusted:
+                return True
+            else:
+                # warn the user
+                print("Current PC:", format_keyvalue(current_pc_info))
+                print("Session PC:", format_keyvalue(session_pc_info))
+                print("Warning: PC not trusted")
+                ans = prompt_for_option_selection(
+                    ["y", "n"],
+                    "Do you trust this PC (fingerprint: %s) ?" % session_fingerprint,
+                )
+                if ans == "y":
+                    self.swm.trust_fingerprint(session_fingerprint)
+                    return True
+                # ask the user to trust the pc and enlist its fingerprint
+        print("User declined the trust request")
+        return False
 
     def restore(self, session_name: str):
         import yaml
@@ -1592,10 +1691,27 @@ class SessionManager:
         content = self.swm.adb_wrapper.read_file(session_path)
         session_data = yaml.safe_load(content)
 
+        session_pc_info = session_data["pc"]
+
+        if not self.check_pc_info(session_pc_info):
+            print("Not loading session '%s'" % session_name)
+            return
+        
+        threads = []
+
         # Restore each window
-        for app_name, window_config in session_data["windows"].items():
-            self.swm.app_manager.run(app_name)
-            # Additional window positioning would go here
+        for scrcpy_info in session_data["windows"]:
+            launch_params = scrcpy_info["launch_params"]
+            app_name = launch_params["package_name"]
+            is_app_running = self.swm.scrcpy_wrapper.check_app_running(app_name)
+            if not is_app_running:
+                # TODO: run this in detached mode, or print log with different pid
+                # TODO: save and restore window positioning
+                t = start_daemon_thread(
+                    self.swm.scrcpy_wrapper.launch_app, kwargs=launch_params
+                )
+                threads.append(t)
+        wait_for_all_threads(threads)
 
     def delete(self, session_name: str) -> bool:
         session_path = self.get_session_path(session_name)
@@ -2228,6 +2344,7 @@ class ScrcpyWrapper:
     def launch_app(
         self,
         package_name: str,
+        init_config: Optional[str] = None,
         window_params: Optional[Dict] = None,
         scrcpy_args: Optional[list[str]] = None,
         new_display=True,
@@ -2308,11 +2425,26 @@ class ScrcpyWrapper:
         # TODO: capture stdout for getting new display id
         # TODO: collect missing char into batches and execute once every 0.5 seconds
         # TODO: restart the app in given display if exited, or just close the window (configure this behavior as an option "on_app_exit")
+        # not to use the compat "launch_params" since we may have trouble when the config file is edited.
+        # TODO: configure this behavior further, by prefer "init_config" or "freezed_parameters"
+        # TODO: build "env" when prefer "freezed_parameters"
+        launch_params = dict(
+            package_name=package_name,
+            init_config=init_config,
+            window_params=window_params,
+            scrcpy_args=scrcpy_args,
+            new_display=new_display,
+            title=title,
+            no_audio=no_audio,
+            use_adb_keyboard=use_adb_keyboard,
+        )
         try:
             # write the pid to the path
             swm_scrcpy_proc_pid_path = self.generate_swm_scrcpy_proc_pid_path()
             with open(swm_scrcpy_proc_pid_path, "w") as f:
-                data = dict(pid=proc_pid)
+                data = dict(
+                    pid=proc_pid, device_id=self.device, launch_params=launch_params
+                )
                 content_data = json.dumps(data, indent=4, ensure_ascii=False)
                 f.write(content_data)
                 # TODO: write additional launch parameters here so we can create a session based on these files
@@ -2448,7 +2580,7 @@ class ScrcpyWrapper:
         import uuid
 
         unique_id = str(uuid.uuid4())
-        filename = "%s.txt" % unique_id
+        filename = "%s.json" % unique_id
         ret = os.path.join(self.swm_scrcpy_proc_pid_basedir, filename)
         return ret
 
@@ -2463,18 +2595,47 @@ class ScrcpyWrapper:
     def has_swm_process_running(self):
         return len(self.get_running_swm_managed_scrcpy_pids()) > 0
 
-    def get_running_swm_managed_scrcpy_pids(self):
-        import psutil
-
+    def list_swm_managed_scrcpy_pid_files(self):
         ret = []
         for it in os.listdir(self.swm_scrcpy_proc_pid_basedir):
             path = os.path.join(self.swm_scrcpy_proc_pid_basedir, it)
             if os.path.isfile(path):
-                with open(path, "r") as f:
-                    pid = f.read()
-                    pid = int(pid)
-                    if psutil.pid_exists(pid):
-                        ret.append(pid)
+                if not path.endswith(".json"):
+                    continue
+                ret.append(path)
+        return ret
+
+    def get_running_swm_managed_scrcpy_pids(self):
+        ret = self.get_running_swm_managed_scrcpy_info_list()
+        ret = [it["pid"] for it in ret]
+        return ret
+
+    def check_app_running(self, app_id: str):
+        running_app_ids = self.get_running_app_ids()
+        ret = app_id in running_app_ids
+        return ret
+
+    def get_running_app_ids(self):
+        scrcpy_info_list = self.get_running_swm_managed_scrcpy_info_list()
+        ret = [it["launch_params"]["package_name"] for it in scrcpy_info_list]
+        return ret
+
+    def get_running_swm_managed_scrcpy_info_list(self):
+        import psutil
+        import json
+
+        ret = []
+        assert self.device
+        for path in self.list_swm_managed_scrcpy_pid_files():
+            with open(path, "r") as f:
+                data = json.load(f)
+                device_id = data["device_id"]
+                if device_id != self.device:
+                    continue
+                pid = data["pid"]
+                pid = int(pid)
+                if psutil.pid_exists(pid):
+                    ret.append(data)
         return ret
 
     def clipboard_paste_input_text(self, text: str):
@@ -2553,11 +2714,12 @@ def get_config_path(cache_dir: str) -> str:
 def load_or_create_config(cache_dir: str, config_path: str):
     if os.path.exists(config_path):
         print("Loading existing config from:", config_path)
-        return omegaconf.OmegaConf.load(config_path)
-
-    print("Creating default config at:", config_path)
-    config = create_default_config(cache_dir)
-    omegaconf.OmegaConf.save(config, config_path)
+        config = omegaconf.OmegaConf.load(config_path)
+    else:
+        print("Creating default config at:", config_path)
+        config = create_default_config(cache_dir)
+        omegaconf.OmegaConf.save(config, config_path)
+    assert type(config) == omegaconf.DictConfig
     return config
 
 
