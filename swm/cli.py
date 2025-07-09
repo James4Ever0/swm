@@ -40,6 +40,15 @@ Options:
   -d --device=<device_selected>
                 Device name or ID for executing the command.
   --debug       Debug mode, capturing all exceptions.
+
+Environment variables:
+  SWM_CACHE_DIR
+                SWM managed cache directory on PC, which stores the main config file
+  SWM_CLI_SUGGESION_LIMIT
+                Maximum possible command suggestions when failed to parse user input
+  ADB           Path to ADB binary (overrides SWM managed ADB)
+  SCRCPY        Path to SCRCPY binary (overrides SWM managed SCRCPY)
+  FZF           Path to FZF binary (overrides SWM  managed FZF)
 """
 
 # TODO: suggest possible command completions when the user types a wrong command, using levenshtein
@@ -73,7 +82,7 @@ from tinydb.table import Document
 __version__ = "0.1.0"
 
 
-def suggest_closest_commands(possible_commands, user_input: str, limit: int):
+def suggest_closest_commands(possible_commands:list[dict], user_input: str, limit: int):
     from fuzzywuzzy import fuzz
 
     assert limit >= 1, "Limit must be greater than zero, given %s" % limit
@@ -684,6 +693,8 @@ def load_and_print_as_dataframe(
     for key, value in additional_fields.items():
         if value is False:
             df.drop(key, axis=1, inplace=True)
+    if 'last_used_time' in df.columns:
+        df['last_used_time'] = df['last_used_time'].transform(lambda x: x.strftime("%Y-%m-%d %H:%M"))
     formatted_output = df.to_string(index=False)
     if show:
         print(formatted_output)
@@ -722,13 +733,14 @@ class AppManager:
     # let's mark it rooted device only.
     # we get the package path, data path and get last modification date of these files
     # or use java to access UsageStats
-    def get_app_last_used_time_from_device(self):
-        raise NotImplementedError(
-            "Function 'get_app_last_used_time_from_device' has not been implemented"
-        )
-        cmd = ""
-        last_used_time = self.swm.adb_wrapper.execute_su_cmd(cmd, capture=True)
-        return last_used_time
+    def get_app_last_used_time_from_device(self, app_id:str):
+        data_path = "/data/data/%s" % app_id
+        if self.swm.adb_wrapper.test_path_existance_su(data_path):
+            cmd = "ls -Artls '%s' | tail -n 1 | awk '{print $7,$8}'" % data_path
+            last_used_time = self.swm.adb_wrapper.check_output_su(cmd).strip()
+            # format: 2022-12-31 12:00
+            last_used_time = datetime.strptime(last_used_time, "%Y-%m-%d %H:%M")
+            return last_used_time
 
     def get_app_last_used_time_from_db(self, package_id: str):
         assert self.swm.on_device_db
@@ -737,6 +749,13 @@ class AppManager:
             device_id, package_id
         )
         return last_used_time
+    
+    def write_app_last_used_time_to_db(self, package_id: str, last_used_time: datetime):
+        assert self.swm.on_device_db
+        device_id = self.swm.current_device
+        self.swm.on_device_db.write_app_last_used_time(
+            device_id, package_id, last_used_time
+        )
 
     def search(self, index: bool, query: Optional[str] = None):
         apps = self.list()
@@ -982,11 +1001,23 @@ retrieve_app_icon: true
 
         for it in package_list:
             package_id = it["id"]
-            last_used_time = self.get_app_last_used_time_from_db(package_id)
-            if last_used_time:
-                it["last_used_time"] = last_used_time.timestamp()
+            if update_cache:
+                last_used_time = self.get_app_last_used_time_from_device(package_id)
+                if last_used_time is None:
+                    last_used_time = self.get_app_last_used_time_from_db(package_id)
+                else:
+                    # update db
+                    self.write_app_last_used_time_to_db(package_id, last_used_time)
             else:
-                it["last_used_time"] = -1
+                last_used_time = self.get_app_last_used_time_from_db(package_id)
+                if last_used_time is None:
+                    last_used_time = self.get_app_last_used_time_from_device(package_id)
+                    if last_used_time is not None:
+                        # update db
+                        self.write_app_last_used_time_to_db(package_id, last_used_time)
+            if last_used_time is None:
+                last_used_time = datetime.fromtimestamp(0)
+            it["last_used_time"] = last_used_time
         return package_list
 
     def list_most_used_apps(
@@ -994,7 +1025,7 @@ retrieve_app_icon: true
     ) -> List[dict[str, Any]]:
         # Placeholder implementation
         all_apps = self.list_all_apps(update_cache=update_cache)
-        all_apps.sort(key=lambda x: -x["last_used_time"])  # type: ignore
+        all_apps.sort(key=lambda x: -x["last_used_time"].timestamp())  # type: ignore
         selected_apps = all_apps[:limit]
         return selected_apps
 
@@ -1386,7 +1417,7 @@ class AdbWrapper:
         self.execute_su_cmd(f"settings put secure default_input_method {ime_name}")
 
     def check_output_su(self, cmd: str, **kwargs):
-        return self.check_output(["su", "-c", cmd], **kwargs)
+        return self.check_output_shell(["su", "-c", cmd], **kwargs)
 
     def check_output_shell(self, cmd_args: list[str], **kwargs):
         return self.check_output(["shell"] + cmd_args, **kwargs)
@@ -1470,6 +1501,13 @@ class AdbWrapper:
     def test_path_existance(self, remote_path: str):
         cmd = ["shell", "test", "-e", remote_path]
         result = self.execute(cmd, check=False)
+        if result.returncode == 0:
+            return True
+        return False
+    
+    def test_path_existance_su(self, remote_path: str):
+        cmd = "test -e '%s'" % remote_path
+        result = self.execute_su_cmd(cmd, check=False)
         if result.returncode == 0:
             return True
         return False
@@ -2122,7 +2160,7 @@ def override_system_excepthook(
     sys.excepthook = custom_excepthook
 
 
-def parse_args():
+def parse_args(cli_suggestion_limit:int):
     from docopt import docopt, DocoptExit
     import sys
 
@@ -2134,7 +2172,7 @@ def parse_args():
         # must be something wrong with the arguments
         argv = sys.argv
         user_input = "swm " + (" ".join(argv[1:]))
-        show_suggestion_on_wrong_command(user_input)
+        show_suggestion_on_wrong_command(user_input, limit=cli_suggestion_limit)
         # TODO: configure "limit" in swm config yaml
     exit(1)
 
@@ -2146,10 +2184,11 @@ def main():
     default_cache_dir = os.path.expanduser("~/.swm")
 
     SWM_CACHE_DIR = os.environ.get("SWM_CACHE_DIR", default_cache_dir)
-
+    # TODO: Include environment variable documentation into help and error message
     os.makedirs(SWM_CACHE_DIR, exist_ok=True)
+    CLI_SUGGESION_LIMIT=os.environ.get('SWM_CLI_SUGGESION_LIMIT', 1)
     # Parse CLI arguments
-    args = parse_args()
+    args = parse_args(CLI_SUGGESION_LIMIT)
 
     config_path = args["--config"]
     if config_path:
@@ -2309,8 +2348,10 @@ def main():
                     elif opt == "show":
                         swm.app_manager.show_app_config(app_id)
             elif args["most-used"]:
+                limit = args.get("<count>", 10)
+                limit = int(limit)
                 swm.app_manager.list(
-                    most_used=args.get("<count>", 10), print_formatted=True
+                    most_used=limit, print_formatted=True
                 )
             elif args["run"]:
                 no_new_display = args["no-new-display"]
