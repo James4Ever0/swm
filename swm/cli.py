@@ -52,6 +52,7 @@ Environment variables:
 """
 
 # BUG: cannot paste when screen is locked
+# TODO: unlock the screen automatically using user provided scripts, note down the success rate, last success time, and last failure time
 
 # TODO: suggest possible command completions when the user types a wrong command, using levenshtein
 
@@ -83,18 +84,68 @@ from tinydb.table import Document
 
 __version__ = "0.1.0"
 
-def grep_lines(text:str, whitelist:list[str] = [], blacklist:list[str] = []):
+
+def parse_dumpsys_active_apps(text: str):
+    ret = {"foreground": [], "focused": []}
+    lines = grep_lines(text, ["ResumedActivity"])
+    for it in lines:
+        if it.startswith("ResumedActivity="):
+            ret["foreground"].append(extract_app_id_from_activity_record(it))
+        elif it.startswith("topResumedActivity="):
+            ret["focused"].append(extract_app_id_from_activity_record(it))
+    return ret
+
+
+def extract_app_id_from_activity_record(text: str, return_original_on_failure=True):
+    items = text.replace("/", "/ /").split()
+    for it in items:
+        it = it.strip()
+        if it.endswith("/"):
+            return it[:-1]
+    if return_original_on_failure:
+        return text
+
+
+def parse_display_focus(lines: list[str]):
+    ret = {}
+    display_id = None
+    for it in lines:
+        if it.startswith("Display:"):
+            display_id = it.split()[1]
+            if "mDisplayId" in display_id:  # hope this format won't change?
+                display_id = display_id.split("=")[1]
+                display_id = int(display_id)
+            else:
+                display_id = None
+        elif it.startswith("mFocusedApp="):
+            if "ActivityRecord" in it:
+                if display_id is not None:
+                    focused_app = extract_app_id_from_activity_record(it)
+                    ret[display_id] = focused_app
+    return ret
+
+
+def split_lines(text: str) -> list[str]:
     ret = []
     for line in text.splitlines():
         line = line.strip()
-        if not line:
-            continue
+        if line:
+            ret.append(line)
+    return ret
+
+
+def grep_lines(
+    text: str, whitelist: list[str] = [], blacklist: list[str] = []
+) -> list[str]:
+    ret = []
+    for line in split_lines(text):
         if whitelist and not any(wh in line for wh in whitelist):
             continue
         if blacklist and any(bl in line for bl in blacklist):
             continue
         ret.append(line)
     return ret
+
 
 def parse_dumpsys_keyvalue_output(output: str):
     lines = output.splitlines()
@@ -586,7 +637,31 @@ class SWMOnDeviceDatabase:
 
         self.db_path = db_path
         self.storage = functools.partial(ADBStorage, adb_wrapper=adb_wrapper)
+        assert type(adb_wrapper.device) == str
+        self.device_id = adb_wrapper.device
         self._db = TinyDB(db_path, storage=self.storage)
+
+    def write_previous_ime(self, previous_ime: str):
+        PreviousIme = Query()
+        device_id = self.device_id
+        self._db.table("previous_ime").upsert(
+            dict(device_id=device_id, previous_ime=previous_ime),
+            (PreviousIme.device_id == device_id),
+        )
+
+    def read_previous_ime(self):
+        PreviousIme = Query()
+        device_id = self.device_id
+
+        # Search for matching document
+        result = self._db.table("previous_ime").get(
+            (PreviousIme.device_id == device_id)
+        )
+        # Return datetime object if found, None otherwise
+
+        if result:
+            assert type(result) == Document
+            return result["previous_ime"]
 
     def write_app_last_used_time(
         self, device_id, app_id: str, last_used_time: datetime
@@ -635,7 +710,7 @@ class SWM:
 
         # Initialize components
         self.adb_wrapper = AdbWrapper(self.adb, self.config)
-        self.scrcpy_wrapper = ScrcpyWrapper(self.scrcpy, self.config, self.adb_wrapper)
+        self.scrcpy_wrapper = ScrcpyWrapper(self.scrcpy, self)
         self.fzf_wrapper = FzfWrapper(self.fzf)
 
         # Device management
@@ -1471,31 +1546,52 @@ class AdbWrapper:
 
     # TODO: if app is not foreground, or is ime input target but has different display id, then we close the corresponding scrcpy window
 
-    def get_display_density(self, display_id):
+    def get_display_density(self, display_id: int):
         # adb shell wm density -d <display_id>
-        output = self.check_output(["shell", "wm", "density", "-d", display_id])
-    
-    def check_app_in_display(self, app_id, display_id):
+        # first, it must exist
+        output = self.check_output(
+            ["shell", "wm", "density", "-d", str(display_id)]
+        ).strip()
+        ret = output.split(":")[-1].strip()
+        ret = int(ret)
+        if ret <= 0:
+            print("Warning: display %s does not exist" % display_id)
+        else:
+            return ret
+
+    def check_app_in_display(self, app_id: str, display_id: int):
         display_focus = self.get_display_current_focus()[display_id]
-        ret = app_id in display_focus
+        ret = (app_id + "/") in (display_focus + "/")
         return ret
 
     def get_display_current_focus(self):
         # adb shell dumpsys window | grep "ime" | grep display
         # adb shell dumpsys window displays | grep "mCurrentFocus"
         # adb shell dumpsys window displays | grep -E "mDisplayId|mFocusedApp"
-        output = self.check_output(["shell", "dumpsys", "window", "displays"])
-        lines = grep_lines(output, ["mDisplayId","mFocusedApp"])
+
         # we can get display id and current focused app per display here
         # just need to parse section "WINDOW MANAGER DISPLAY CONTENTS (dumpsys window displays)"
 
-    def check_app_is_foreground(self, app_id:str):
+        output = self.check_output(["shell", "dumpsys", "window", "displays"])
+        lines = grep_lines(output, ["mDisplayId", "mFocusedApp"])
+        ret = parse_display_focus(lines)
+        return ret
+
+    def check_app_is_foreground(self, app_id: str):
         # convert the binary output from "wm dump-visible-window-views" into ascii byte by byte, those not viewable into "."
         # adb shell wm dump-visible-window-views | xxd | grep <app_id>
 
         # or use the readable output from dumpsys
         # adb shell "dumpsys activity activities | grep ResumedActivity" | grep <app_id>
+        # topResumedActivity: on top of specific display
+        # ResumedActivity: the current focused app
         output = self.check_output(["shell", "dumpsys", "activity", "activities"])
+        data = parse_dumpsys_active_apps(output)
+        foreground_apps = data["foreground"]
+        for it in foreground_apps:
+            if (app_id + "/") in (it + "/"):
+                return True
+        return False
 
     def check_app_existance(self, app_id):
         apk_path = self.get_app_apk_path(app_id)
@@ -1509,9 +1605,7 @@ class AdbWrapper:
         # If both are false, the display is off.
         # If mHoldingWakeLockSuspendBlocker is false, and mHoldingDisplaySuspendBlocker is true, the display is on, but locked.
         # If both are true, the display is on.
-        output = self.check_output(
-            ["shell", "dumpsys", "power"]
-        )
+        output = self.check_output(["shell", "dumpsys", "power"])
         lines = grep_lines(output, ["mHolding"])
         data = parse_dumpsys_keyvalue_output("\n".join(lines))
         if (
@@ -1865,13 +1959,12 @@ output_icon_path = "{png_path}"
 
 
 class ScrcpyWrapper:
-    def __init__(
-        self, scrcpy_path: str, config: omegaconf.DictConfig, adb_wrapper: "AdbWrapper"
-    ):
+    def __init__(self, scrcpy_path: str, swm: "SWM"):
         self.scrcpy_path = scrcpy_path
-        self.config = config
-        self.device = config.get("device")
-        self.adb_wrapper = adb_wrapper
+        self.config = swm.config
+        self.device = swm.config.get("device")
+        self.adb_wrapper = swm.adb_wrapper
+        self.swm = swm
 
     @property
     def app_list_cache_path(self):
@@ -2024,12 +2117,28 @@ class ScrcpyWrapper:
         cmd = self._build_cmd(args)
         _env = os.environ.copy()
         _env.update(env)
+        # merge stderr with stdout
         proc = subprocess.Popen(
-            cmd, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True, env=_env
+            cmd,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            bufsize=1,
+            universal_newlines=True,
+            env=_env,
         )
         proc_pid = proc.pid
+
+        self.start_sidecar_scrcpy_app_monitor_thread(package_name, proc)
+
+        if new_display:
+            self.start_sidecar_scrcpy_stdout_monitor_thread(proc)
+        else:
+            setattr(proc, "display_id", 0)
         assert proc.stderr
-        previous_ime = self.adb_wrapper.get_current_ime()
+        previous_ime = self.get_previous_ime()
+        if not previous_ime:
+            print("Warning: previous ime unrecognized")
+
         # TODO: capture stdout for getting new display id
         # TODO: collect missing char into batches and execute once every 0.5 seconds
         # TODO: restart the app in given display if exited, or just close the window (configure this behavior as an option "on_app_exit")
@@ -2059,21 +2168,32 @@ class ScrcpyWrapper:
                 # [server] WARN: Could not inject char u+4f60
                 # TODO: use adb keyboard for pasting text from clipboard
         finally:
-            if os.path.exists(swm_scrcpy_proc_pid_path):
-                os.remove(swm_scrcpy_proc_pid_path)
 
             # TODO: close the app when the main process is closed
             # kill by pid, if alive
 
             if psutil.pid_exists(proc_pid):
-                os.kill(proc_pid, signal.SIGKILL)
-                proc.kill()
+                try:
+                    os.kill(proc_pid, signal.SIGKILL)
+                    proc.kill()
+                except:
+                    print("Error while trying to kill the scrcpy process %s" % proc_pid)
+
+            if os.path.exists(swm_scrcpy_proc_pid_path):
+                if not psutil.pid_exists(proc_pid):
+                    os.remove(swm_scrcpy_proc_pid_path)
+                else:
+                    print(
+                        "Not removing PID file %s since the scrcpy process %s is still running"
+                        % (swm_scrcpy_proc_pid_path, proc_pid)
+                    )
 
             no_swm_process_running = not self.has_swm_process_running
 
             if no_swm_process_running:
-                print("Reverting to previous ime")
-                self.adb_wrapper.enable_and_set_specific_keyboard(previous_ime)
+                if previous_ime:
+                    print("Reverting to previous ime")
+                    self.adb_wrapper.enable_and_set_specific_keyboard(previous_ime)
 
     def check_app_in_display(self, app_id: str, display_id: int):
         # raise NotImplementedError("TODO")
@@ -2085,10 +2205,36 @@ class ScrcpyWrapper:
             print("App %s is not in display %s" % (app_id, display_id))
         return app_is_foreground and app_is_in_display
 
-    def scrcpy_app_monitor(self, app_id: str, display_id: int, proc_pid: int):
+    def start_sidecar_scrcpy_stdout_monitor_thread(self, proc: subprocess.Popen):
+        import threading
+
+        assert proc.stdout
+        proc_stdout = proc.stdout
+
+        def monitor_stdout_and_set_attribute():
+            for line in proc_stdout:
+                line = line.strip()
+                print("<scrcpy stdout> %s" % line)
+                if line.startswith("[server] INFO: New display:"):
+                    display_id = line.split("=")[-1].strip("()")
+                    display_id = int(display_id)
+                    setattr(proc, "display_id", display_id)
+
+        thread = threading.Thread(target=monitor_stdout_and_set_attribute, daemon=True)
+        thread.start()
+
+    def scrcpy_app_monitor(self, app_id: str, proc: subprocess.Popen):
         import signal
         import time
         import psutil
+
+        proc_pid = proc.pid
+
+        while True:
+            time.sleep(0.2)
+            if hasattr(proc, "display_id"):
+                display_id = getattr(proc, "display_id")
+                break
 
         while True:
             time.sleep(1)
@@ -2100,8 +2246,25 @@ class ScrcpyWrapper:
                 # kill scrcpy
                 os.kill(proc_pid, signal.SIGKILL)
 
+    def get_previous_ime(self):
+        adbkeyboard_ime = "com.android.adbkeyboard/.AdbIME"
+        previous_ime = self.adb_wrapper.get_current_ime()
+        if previous_ime == adbkeyboard_ime:
+            previous_ime = self.read_previous_ime_from_device()
+        else:
+            self.store_previous_ime_to_device(previous_ime)
+        return previous_ime
+
+    def read_previous_ime_from_device(self):
+        assert self.swm.on_device_db
+        return self.swm.on_device_db.read_previous_ime()
+
+    def store_previous_ime_to_device(self, previous_ime: str):
+        assert self.swm.on_device_db
+        self.swm.on_device_db.write_previous_ime(previous_ime)
+
     def start_sidecar_scrcpy_app_monitor_thread(
-        self, app_id: str, display_id: int, scrcpy_pid: int
+        self, app_id: str, proc: subprocess.Popen
     ):
         import threading
 
@@ -2109,7 +2272,7 @@ class ScrcpyWrapper:
         target = self.scrcpy_app_monitor
         thread = threading.Thread(
             target=target,
-            kwargs=dict(app_id=app_id, display_id=display_id, scrcpy_pid=scrcpy_pid),
+            kwargs=dict(app_id=app_id, proc=proc),
             daemon=True,
         )
         thread.start()
