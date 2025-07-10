@@ -4,6 +4,7 @@ __doc__ = (
 
 Usage:
   swm init
+  swm repl
   swm [options] adb [<adb_args>...]
   swm [options] scrcpy [<scrcpy_args>...]
   swm [options] app run <query> [no-new-display] [<init_config>]
@@ -14,6 +15,10 @@ Usage:
   swm [options] app config list
   swm [options] app config (show|edit) <config_name>
   swm [options] app config copy <source_name> <target_name>
+  swm [options] ime list
+  swm [options] ime switch <ime_name>
+  swm [options] ime search
+  swm [options] ime switch-to-previous
   swm [options] session list [last_used]
   swm [options] session search [index]
   swm [options] session restore [session_name]
@@ -50,6 +55,8 @@ Environment variables:
   SCRCPY        Path to SCRCPY binary (overrides SWM managed SCRCPY)
   FZF           Path to FZF binary (overrides SWM  managed FZF)
 """
+
+# TODO: manage all stdout and stderr into a separate textualize window, then setup a prompt or repl for doing various things like switching ime, starting and managing multiple sessions
 
 # TODO: save session to all devices with the same name, and restore with the same name
 
@@ -114,6 +121,19 @@ from tinydb.table import Document
 
 __version__ = "0.1.0"
 
+def local_webp_to_png(webp_path: str, png_path: str):
+    from PIL import Image
+    img = Image.open(webp_path)
+    img.save(png_path)
+
+def get_android_bin_arch(device_arch: str):
+    if "64" in device_arch:
+        return "aarch64"
+    elif "hf" in device_arch or "v7" in device_arch:
+        return "armhf"
+    else:
+        raise ValueError("Unable to translate device arch %s to bin arch" % device_arch)
+
 
 def start_daemon_thread(target, args=(), kwargs={}):
     import threading
@@ -122,7 +142,8 @@ def start_daemon_thread(target, args=(), kwargs={}):
     thread.start()
     return thread
 
-def wait_for_all_threads(threads:list):
+
+def wait_for_all_threads(threads: list):
     for t in threads:
         t.join()
 
@@ -423,7 +444,10 @@ def prompt_for_option_selection(
         for i, option in enumerate(options):
             print(f"{i + 1}. {option}")
         try:
-            selection = int(input("Enter your choice: "))
+            user_input = input("Enter your choice: ")
+            if user_input in options:
+                return user_input
+            selection = int(user_input)
             if 1 <= selection <= len(options):
                 return options[selection - 1]
         except ValueError:
@@ -865,6 +889,8 @@ class SWM:
         minimum_android_version_for_multi_displays = 10  # from source code of scrcpy
         android_version = self.adb_wrapper.get_android_version()
         print("Android version:", android_version)
+        device_arch = self.adb_wrapper.get_device_architecture()
+        print("Device architecture:", device_arch)
         if android_version < minimum_android_version_for_multi_displays:
             raise RuntimeError(
                 "Android version must be %s or higher"
@@ -1696,7 +1722,7 @@ class SessionManager:
         if not self.check_pc_info(session_pc_info):
             print("Not loading session '%s'" % session_name)
             return
-        
+
         threads = []
 
         # Restore each window
@@ -2078,21 +2104,46 @@ class AdbWrapper:
             apk_path = output[len(prefix) :]
             return apk_path
 
+    def get_app_icon_path(self, app_apk_remote_path: str):
+        aapt_bin_path = self.install_aapt_binary()
+        cmd = [aapt_bin_path, "dump", "badging", app_apk_remote_path]
+        output = self.check_output_shell(cmd)
+        lines = grep_lines(output, whitelist=["application-icon"])
+        icon_path = lines[0].split("=")[1].strip()
+        return icon_path
+
     def extract_app_icon(self, app_apk_remote_path: str, icon_remote_dir: str):
-        zip_icon_path = ""
+        zip_icon_path = self.get_app_icon_path(app_apk_remote_path)
         extracted_icon_remote_path = os.path.join(icon_remote_dir, zip_icon_path)
         self.execute_shell(
             ["unzip", app_apk_remote_path, "-d", icon_remote_dir, zip_icon_path]
         )
         return extracted_icon_remote_path
 
+    @property
+    def remote_icon_dir(self):
+        remote_cache_dir = self.remote_swm_dir
+        ret = os.path.join(remote_cache_dir, "icons")
+        self.create_dirs_if_not_exist(ret)
+        return ret
+
+    def create_dirs_if_not_exist(self, dir_path: str):
+        if not self.test_path_existance(dir_path):
+            self.create_dirs(dir_path)
+
+    @property
+    def remote_tmpdir(self):
+
+        tmpdir = os.path.join(self.remote_swm_dir, "tmp")
+        self.create_dirs_if_not_exist(tmpdir)
+        return tmpdir
+
     def retrieve_app_icon(self, app_id: str, local_icon_path: str):
-        remote_icon_png_path = f"/sdcard/.swm/icons/{app_id}_icon.png"
-        tmpdir = "/sdcard/.swm/tmp"
+        remote_icon_png_path = os.path.join(self.remote_icon_dir, f"{app_id}_icon.png")
+        tmpdir = self.remote_tmpdir
         if not self.test_path_existance(remote_icon_png_path):
-            aapt_bin_path = self.install_aapt_binary()
             apk_remote_path = self.get_app_apk_path(app_id)
-            assert apk_remote_path, f"cannot find apk path for {app_id}"
+            assert apk_remote_path, f"Cannot find apk path for {app_id}"
             icon_remote_dir = tmpdir
             icon_remote_raw_path = self.extract_app_icon(
                 apk_remote_path, icon_remote_dir
@@ -2111,22 +2162,36 @@ class AdbWrapper:
             self.remove_dir(tmpdir, confirm=False)
         self.pull_file(remote_icon_png_path, local_icon_path)
 
-    def convert_icon_xml_to_png(self, icon_xml_path, icon_png_path):
-        java_code = f"""input_icon_path = "{icon_xml_path}"
-output_icon_path = "{icon_png_path}"
+    def convert_icon_xml_to_png(self, icon_xml_path:str, icon_png_path:str):
+        java_code = f"""String input_icon_path = "{icon_xml_path}";
+String output_icon_path = "{icon_png_path}";
+Drawable myIcon = getResources().getDrawable( input_icon_path);
+Bitmap bitmap = Bitmap.createBitmap(myIcon.getIntrinsicWidth(), myIcon.getIntrinsicHeight(), Bitmap.Config.ARGB_8888);
+Canvas canvas = new Canvas(bitmap);
+myIcon.setBounds(0, 0, canvas.getWidth(), canvas.getHeight());
+myIcon.draw(canvas);
+FileOutputStream out = new FileOutputStream(output_icon_path);
+bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
 """
         self.execute_java_code(java_code)
 
-    def convert_webp_to_png(self, webp_path, png_path):
-        java_code = f"""input_icon_path = "{webp_path}"
-output_icon_path = "{png_path}"
-"""
-        self.execute_java_code(java_code)
+    def convert_webp_to_png(self, remote_webp_path:str, remote_png_path:str):
+        # self.convert_icon_xml_to_png(webp_path, png_path)
+        import tempfile
 
-    def copy_file(self, src_path, dst_path):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_png_path = os.path.join(tmpdir, 'icon.png')
+            local_webp_path = os.path.join(tmpdir, 'icon.webp')
+
+            self.pull_file(remote_webp_path, local_webp_path)
+            local_webp_to_png(local_webp_path, local_png_path)
+            self.push_file(local_png_path, remote_png_path)
+
+
+    def copy_file(self, src_path:str, dst_path:str):
         self.execute_shell(["cp", src_path, dst_path])
 
-    def remove_dir(self, dir_path, confirm=True):
+    def remove_dir(self, dir_path:str, confirm=True):
         if confirm:
             ans = input("Are you sure you want to remove %s? (y/n)" % dir_path)
             if ans.lower() != "y":
@@ -2206,8 +2271,9 @@ output_icon_path = "{png_path}"
         if device_path is None:
             device_path = os.path.join(self.config.android_session_storage_path, "aapt")
         device_architecture = self.get_device_architecture()
+        bin_arch = get_android_bin_arch(device_architecture)
         local_aapt_path = os.path.join(
-            self.config.cache_dir, "android-binaries", "aapt-%s" % device_architecture
+            self.config.cache_dir, "android-binaries", "aapt", "aapt-%s" % bin_arch
         )
         self.execute(["push", local_aapt_path, device_path])
         self.execute(["shell", "chmod", "755", device_path])
@@ -2960,6 +3026,19 @@ def main():
                         type_symbol=with_type,
                     ),
                 )
+            else:
+                ...
+        elif args["ime"]:
+            if args["list"]:
+                ...
+            elif args["switch"]:
+                ime_name = args["<ime_name>"]
+            elif args["search"]:
+                ...
+            elif args["switch-to-previous"]:
+                ...
+            else:
+                ...
         elif args["session"]:
             if args["list"]:
                 sessions = swm.session_manager.list()
