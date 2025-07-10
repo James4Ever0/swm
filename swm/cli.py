@@ -3,7 +3,7 @@ __doc__ = (
 ) = """SWM - Scrcpy Window Manager
 
 Usage:
-  swm init
+  swm init [force]
   swm [options] repl
   swm [options] healthcheck
   swm [options] adb [<adb_args>...]
@@ -20,6 +20,11 @@ Usage:
   swm [options] ime (switch|activate|deactivate) <query>
   swm [options] ime search
   swm [options] ime switch-to-previous
+  swm [options] java run <script_path>
+  swm [options] java shell
+  swm [options] termux run <script_path>
+  swm [options] termux exec <executable>
+  swm [options] termux shell [<shell_args>...]
   swm [options] session list [last-used]
   swm [options] session search [index]
   swm [options] session restore [session_name]
@@ -56,6 +61,8 @@ Environment variables:
   SCRCPY        Path to SCRCPY binary (overrides SWM managed SCRCPY)
   FZF           Path to FZF binary (overrides SWM managed FZF)
 """
+
+# TODO: paste from pc to device using adb keyboard by listening for paste events when clipboard fails
 
 # TODO: display different commandline help for rooted and non-rooted devices
 
@@ -339,13 +346,17 @@ def test_internet_connectivity(url: str, timeout: float):
         return False, -1
 
 
-def download_initial_binaries(basedir: str, mirror_list: list[str]):
+def download_initial_binaries(basedir: str, mirror_list: list[str], force=False):
     import pathlib
 
+
     init_flag = get_init_complete_path(basedir)
-    if check_init_complete(basedir):
-        print("Initialization complete")
-        return
+    if not force:
+        if check_init_complete(basedir):
+            print("Initialization complete")
+            return
+    else:
+        print("Performing force init")
     github_mirror = test_best_github_mirror(mirror_list, timeout=5)
     print("Using mirror: %s" % github_mirror)
     baseurl = "%s/James4Ever0/swm/releases/download/bin/" % github_mirror
@@ -355,6 +366,7 @@ def download_initial_binaries(basedir: str, mirror_list: list[str]):
     print("Your PC OS and architecture: %s" % pc_os_arch)
     download_files = [
         "android-binaries.zip",
+        "java-jar.zip",
         "apk.zip",
         "pc-binaries-%s.zip" % pc_os_arch,
     ]
@@ -824,17 +836,18 @@ class SWM:
         self.adb_wrapper = AdbWrapper(self.adb, self.config)
         self.scrcpy_wrapper = ScrcpyWrapper(self.scrcpy, self)
         self.fzf_wrapper = FzfWrapper(self.fzf)
-        self.ime_manager = ImeManager(self)
 
-        # Device management
+        # Initialize attributes
         self.current_device = None
+        self.on_device_db = None
 
         # Initialize managers
         self.app_manager = AppManager(self)
         self.session_manager = SessionManager(self)
         self.device_manager = DeviceManager(self)
+        self.ime_manager = ImeManager(self)
+        self.java_manager = JavaManager(self)
 
-        self.on_device_db = None
 
     @property
     def local_icon_dir(self):
@@ -2122,9 +2135,24 @@ class AdbWrapper:
 
     def install_beeshell(self):
         apk_path = self.get_swm_apk_path("beeshell")
-        self.install_apk(apk_path)
+        app_id = "me.zhanghai.android.beeshell"
+        try:
+            self.install_apk(apk_path)
+        except:
+            print("Failed to install apk.")
+            print("Uninstalling existing app %s" % app_id)
+            self.uninstall_app(app_id)
+            print("Trying second installation")
+            self.install_apk(apk_path)
+        
+    def uninstall_app(self, app_id:str):
+        self.execute(["uninstall", app_id])
 
     def execute_java_code(self, java_code):
+        # TODO: Capture execution output, inplant success challenge such as simple arithmatics
+        # TODO: Write a java repl accessibke via swm cli
+        # TODO: Run termux shell via swm cli, check if termux is installed first
+        # TODO: Force airplane mode when using swm
         print("Executing Java code:")
         print(java_code)
         # https://github.com/zhanghai/BeeShell
@@ -2139,8 +2167,12 @@ class AdbWrapper:
             "pm_path=`pm path me.zhanghai.android.beeshell` && apk_path=${pm_path#package:} && `dirname $apk_path`/lib/*/libbsh.so "
             + bsh_tmp_path
         )
+        # copy files
         self.write_file(bsh_tmp_path, java_code)
         self.write_file(sh_tmp_path, java_code_runner)
+        # execute
+        self.execute_shell(['sh', sh_tmp_path])
+
 
     def get_app_apk_path(self, app_id: str):
         ret = None
@@ -2258,6 +2290,7 @@ Bitmap bitmap = bd.getBitmap();
 FileOutputStream out = new FileOutputStream(output_icon_path);
 bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
 """
+        # TODO: store xml files under /data/data/me.zhanghai.android.beeshell/ and change permission into 777, remove afterwards
         self.execute_java_code(java_code)
 
     def convert_webp_to_png(self, remote_webp_path: str, remote_png_path: str):
@@ -2367,7 +2400,7 @@ bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
         )
         self.execute(["push", local_aapt_path, device_path])
         self.execute_su_cmd("cp %s %s" % (device_path, target_path_su))
-        self.execute_su_cmd("chmod +x %s" % target_path_su)
+        self.execute_su_cmd("chmod 700 %s" % target_path_su)
 
     def pull_session(self, session_name: str, local_path: str):
         remote_path = os.path.join(
@@ -2924,9 +2957,30 @@ class ImeManager:
 
 class WirelessManager: ...
 
-
 class FileManager: ...
 
+class JavaManager:
+    def __init__(self, swm:SWM):
+        self.swm=swm
+        self.beeshell_app_id = 'me.zhanghai.android.beeshell'
+        self.beeshell_invoke_command = "pm_path=`pm path me.zhanghai.android.beeshell` && apk_path=${pm_path#package:} && `dirname $apk_path`/lib/*/libbsh.so"
+    
+    def run(self, script_path:str):
+        if not os.path.exists(script_path):
+            raise ValueError("Script '%s' does not exist" % script_path)
+        if os.path.isfile(script_path):
+            with open(script_path, "r") as f:
+                content = f.read()
+                self.swm.adb_wrapper.execute_java_code(content)
+        else:
+            raise ValueError("Script '%s' is not a file" % script_path)
+    
+    def repl(self):
+        self.swm.adb_wrapper.install_beeshell()
+        print("Begin REPL:")
+        self.swm.adb_wrapper.execute_shell([self.beeshell_invoke_command])
+
+class TermuxManager: ...
 
 def create_default_config(cache_dir: str):
     return omegaconf.OmegaConf.create(
@@ -3067,7 +3121,8 @@ def main():
 
     if args["init"]:
         # setup initial environment, download binaries
-        download_initial_binaries(SWM_CACHE_DIR, config.github_mirrors)
+        force = args["force"]
+        download_initial_binaries(SWM_CACHE_DIR, config.github_mirrors, force=force)
         return
     elif args["repl"]:
         print("Warning: REPL mode is not implemented yet.")
@@ -3248,6 +3303,17 @@ def main():
                 swm.ime_manager.switch_to_previous()
             else:
                 ...
+        elif args["java"]:
+            if args["run"]:
+                script_path = args["<script_path>"]
+                # run the script
+                swm.java_manager.run(script_path)
+            elif args["shell"]:
+                swm.java_manager.repl()
+            else:
+                ...
+        elif args["termux"]:
+            print("Warning: Termux commands not implemented yet")
         elif args["session"]:
             if args["list"]:
                 last_used = args["last-used"]
