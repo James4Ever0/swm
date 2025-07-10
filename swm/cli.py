@@ -4,7 +4,8 @@ __doc__ = (
 
 Usage:
   swm init
-  swm repl
+  swm [options] repl
+  swm [options] healthcheck
   swm [options] adb [<adb_args>...]
   swm [options] scrcpy [<scrcpy_args>...]
   swm [options] app run <query> [no-new-display] [<init_config>]
@@ -53,10 +54,10 @@ Environment variables:
                 Maximum possible command suggestions when failed to parse user input
   ADB           Path to ADB binary (overrides SWM managed ADB)
   SCRCPY        Path to SCRCPY binary (overrides SWM managed SCRCPY)
-  FZF           Path to FZF binary (overrides SWM  managed FZF)
+  FZF           Path to FZF binary (overrides SWM managed FZF)
 """
 
-# TODO: manage all stdout and stderr into a separate textualize window, then setup a prompt or repl for doing various things like switching ime, starting and managing multiple sessions, managing wifi, bluetooth, browse and copy files, etc.
+# TODO: manage all stdout and stderr into a separate textualize window, then setup a prompt or repl for doing various things like switching ime, starting and managing multiple sessions, managing wifi, bluetooth, files, etc.
 
 # TODO: save session to all devices with the same name, and restore with the same name
 
@@ -1768,7 +1769,7 @@ class DeviceManager:
     def __init__(self, swm: SWM):
         self.swm = swm
 
-    def list(self, print_formatted):
+    def list(self, print_formatted: bool = False, show_last_used=False):
         ret = self.swm.adb_wrapper.list_device_detailed()
         if print_formatted:
             load_and_print_as_dataframe(ret)
@@ -1826,12 +1827,12 @@ class AdbWrapper:
         return output
 
     def list_active_imes(self):
-        ret= self.check_output_su("ime list -s")
+        ret = self.check_output_su("ime list -s")
         ret = split_lines(ret)
         return ret
 
     def list_installed_imes(self):
-        ret=self.check_output_su("ime list -s -a")
+        ret = self.check_output_su("ime list -s -a")
         ret = split_lines(ret)
         return ret
 
@@ -2139,10 +2140,13 @@ class AdbWrapper:
                     apk_path_list.append(apk_path)
             apk_count = len(apk_path_list)
 
-            if apk_count>0:
+            if apk_count > 0:
                 ret = apk_path_list[0]
-            if apk_count>1:
-                print("Warning: App %s has multiple apk files (%s apks), using the first one: %s" % (app_id, apk_count, ret))
+            if apk_count > 1:
+                print(
+                    "Warning: App %s has multiple apk files (%s apks), using the first one: %s"
+                    % (app_id, apk_count, ret)
+                )
         if ret is None:
             print("Warning: App %s not found" % app_id)
         return ret
@@ -2169,12 +2173,15 @@ class AdbWrapper:
     def get_app_icon_path(self, app_apk_remote_path: str):
         output = self.aapt_dump_badging(app_apk_remote_path)
         lines = grep_lines(output, whitelist=["application-icon"])
-        icon_path = lines[0].split(":")[1].strip()
+        icon_path = lines[0].split(":")[1].strip().strip("'")
         return icon_path
 
     def extract_app_icon(self, app_apk_remote_path: str, icon_remote_dir: str):
         zip_icon_path = self.get_app_icon_path(app_apk_remote_path)
         extracted_icon_remote_path = os.path.join(icon_remote_dir, zip_icon_path)
+        if self.test_path_existance(extracted_icon_remote_path):
+            # remove it, no one can be sure it is the icon we want
+            self.execute_shell(["rm", extracted_icon_remote_path])
         self.execute_shell(
             ["unzip", app_apk_remote_path, "-d", icon_remote_dir, zip_icon_path]
         )
@@ -2211,6 +2218,7 @@ class AdbWrapper:
             icon_format = icon_remote_raw_path.lower().split(".")[-1]
             # TODO:
             # use self.remote.* for all remote operations
+            print("Icon format:", icon_format)
             if icon_format == "xml":
                 self.convert_icon_xml_to_png(icon_remote_raw_path, remote_icon_png_path)
             elif icon_format == "png":
@@ -2218,7 +2226,7 @@ class AdbWrapper:
             elif icon_format == "webp":
                 self.convert_webp_to_png(icon_remote_raw_path, remote_icon_png_path)
             else:
-                raise Exception("Unknown icon format %s" % icon_format)
+                raise ValueError("Unknown icon format %s" % icon_format)
             self.remove_dir(tmpdir, confirm=False)
         self.pull_file(remote_icon_png_path, local_icon_path)
 
@@ -2256,7 +2264,7 @@ bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
             if ans.lower() != "y":
                 print("Aborting...")
                 return
-        self.execute(["rm", "-rf", dir_path])
+        self.execute_shell(["rm", "-rf", dir_path])
 
     @property
     def executable_remote_swm_dir(self):
@@ -2333,7 +2341,7 @@ bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
     def create_dirs(self, dirpath: str):
         self.execute(["shell", "mkdir", "-p", dirpath])
 
-    def push_aapt_su(self, target_path_su:str):
+    def push_aapt_su(self, target_path_su: str):
         device_path = os.path.join(self.config.android_session_storage_path, "aapt")
         device_architecture = self.get_device_architecture()
         bin_arch = get_android_bin_arch(device_architecture)
@@ -2341,8 +2349,8 @@ bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
             self.config.cache_dir, "android-binaries", "aapt", "aapt-%s" % bin_arch
         )
         self.execute(["push", local_aapt_path, device_path])
-        self.execute_su_cmd("cp %s %s" %(device_path, target_path_su))
-        self.execute_su_cmd("chmod +x %s"% target_path_su)
+        self.execute_su_cmd("cp %s %s" % (device_path, target_path_su))
+        self.execute_su_cmd("chmod +x %s" % target_path_su)
 
     def pull_session(self, session_name: str, local_path: str):
         remote_path = os.path.join(
@@ -2841,7 +2849,7 @@ class ImeManager:
                 rec = dict(app_name=app_name, ime_id=it, state=state)
                 records.append(rec)
             # load and display records
-            records.sort(key=lambda x: sort_order[x['state']])
+            records.sort(key=lambda x: sort_order[x["state"]])
             load_and_print_as_dataframe(records)
         return ret
 
@@ -3037,6 +3045,9 @@ def main():
     elif args["repl"]:
         print("Warning: REPL mode is not implemented yet.")
         return
+    elif args["healthcheck"]:
+        print("Warning: Healthcheck is not implemented yet.")
+        return
     init_complete = check_init_complete(SWM_CACHE_DIR)
     if not init_complete:
         print(
@@ -3070,8 +3081,8 @@ def main():
 
     elif args["device"]:
         if args["list"]:
-            last_used = args['last-used']
-            swm.device_manager.list(print_formatted=True, show_last_used = last_used)
+            last_used = args["last-used"]
+            swm.device_manager.list(print_formatted=True, show_last_used=last_used)
         elif args["search"]:
             device = swm.device_manager.search()
             ans = prompt_for_option_selection(["select", "name"], "Choose an option:")
@@ -3212,7 +3223,7 @@ def main():
                 ...
         elif args["session"]:
             if args["list"]:
-                last_used = args['last-used']
+                last_used = args["last-used"]
                 swm.session_manager.list(show_last_used=last_used, print_formatted=True)
             elif args["search"]:
                 session_name = swm.session_manager.search()
