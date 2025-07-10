@@ -16,17 +16,17 @@ Usage:
   swm [options] app config (show|edit) <config_name>
   swm [options] app config copy <source_name> <target_name>
   swm [options] ime list
-  swm [options] ime switch <ime_name>
+  swm [options] ime (switch|activate|deactivate) <query>
   swm [options] ime search
   swm [options] ime switch-to-previous
-  swm [options] session list [last_used]
+  swm [options] session list [last-used]
   swm [options] session search [index]
   swm [options] session restore [session_name]
   swm [options] session delete <query>
   swm [options] session edit <query>
   swm [options] session save <session_name>
   swm [options] session copy <source> <target>
-  swm [options] device list [last_used]
+  swm [options] device list [last-used]
   swm [options] device search [index]
   swm [options] device select <query>
   swm [options] device name <device_id> <device_alias>
@@ -56,7 +56,7 @@ Environment variables:
   FZF           Path to FZF binary (overrides SWM  managed FZF)
 """
 
-# TODO: manage all stdout and stderr into a separate textualize window, then setup a prompt or repl for doing various things like switching ime, starting and managing multiple sessions
+# TODO: manage all stdout and stderr into a separate textualize window, then setup a prompt or repl for doing various things like switching ime, starting and managing multiple sessions, managing wifi, bluetooth, browse and copy files, etc.
 
 # TODO: save session to all devices with the same name, and restore with the same name
 
@@ -121,10 +121,13 @@ from tinydb.table import Document
 
 __version__ = "0.1.0"
 
+
 def local_webp_to_png(webp_path: str, png_path: str):
     from PIL import Image
+
     img = Image.open(webp_path)
     img.save(png_path)
+
 
 def get_android_bin_arch(device_arch: str):
     if "64" in device_arch:
@@ -815,6 +818,7 @@ class SWM:
         self.adb_wrapper = AdbWrapper(self.adb, self.config)
         self.scrcpy_wrapper = ScrcpyWrapper(self.scrcpy, self)
         self.fzf_wrapper = FzfWrapper(self.fzf)
+        self.ime_manager = ImeManager(self)
 
         # Device management
         self.current_device = None
@@ -825,6 +829,13 @@ class SWM:
         self.device_manager = DeviceManager(self)
 
         self.on_device_db = None
+
+    @property
+    def local_icon_dir(self):
+        assert self.current_device
+        ret = os.path.join(self.cache_dir, "icons", self.current_device)
+        os.makedirs(ret, exist_ok=True)
+        return ret
 
     @property
     def fingerprint(self):
@@ -943,7 +954,7 @@ class SWM:
 
 
 def load_and_print_as_dataframe(
-    list_of_dict, additional_fields={}, show=True, sort_columns=True
+    list_of_dict, drop_fields={}, show=True, sort_columns=True
 ):
     import pandas
 
@@ -953,7 +964,7 @@ def load_and_print_as_dataframe(
 
         # Reindex the DataFrame with the sorted column order
         df = df[sorted_columns]
-    for key, value in additional_fields.items():
+    for key, value in drop_fields.items():
         if value is False:
             df.drop(key, axis=1, inplace=True)
     if "last_used_time" in df.columns:
@@ -1042,7 +1053,7 @@ class AppManager:
         most_used: Optional[int] = None,
         print_formatted: bool = False,
         update_cache=False,
-        additional_fields: dict = {},
+        drop_fields: dict[str, bool] = {},
     ):
         if most_used:
             apps = self.list_most_used_apps(most_used, update_cache=update_cache)
@@ -1050,7 +1061,7 @@ class AppManager:
             apps = self.list_all_apps(update_cache=update_cache)
 
         if print_formatted:
-            load_and_print_as_dataframe(apps, additional_fields=additional_fields)
+            load_and_print_as_dataframe(apps, drop_fields=drop_fields)
 
         return apps
 
@@ -1118,11 +1129,10 @@ class AppManager:
             self.install_and_use_adb_keyboard()
 
         if app_config.get("retrieve_app_icon", False):
-            print("[Warning] Retrieving app icon is not implemented yet")
-            # icon_path = os.path.join(self.swm.config_dir, "icons", "%s.png" % app_id)
-            # if not os.path.exists(icon_path):
-            #     self.retrieve_app_icon(app_id, icon_path)
-            #     env["SCRCPY_ICON_PATH"] = icon_path
+            icon_path = os.path.join(self.swm.local_icon_dir, "%s.png" % app_id)
+            if not os.path.exists(icon_path):
+                self.retrieve_app_icon(app_id, icon_path)
+                env["SCRCPY_ICON_PATH"] = icon_path
         # Add window config if exists
         win = app_config.get("window", None)
 
@@ -1813,7 +1823,14 @@ class AdbWrapper:
         return output
 
     def list_active_imes(self):
-        return self.check_output_su("ime list -s").splitlines()
+        ret= self.check_output_su("ime list -s")
+        ret = split_lines(ret)
+        return ret
+
+    def list_installed_imes(self):
+        ret=self.check_output_su("ime list -s -a")
+        ret = split_lines(ret)
+        return ret
 
     def set_current_ime(self, ime_name):
         self.execute_su_cmd(f"settings put secure default_input_method {ime_name}")
@@ -2055,7 +2072,16 @@ class AdbWrapper:
         return self.execute_su_cmd(cmd, **kwargs)
 
     def enable_and_set_specific_keyboard(self, keyboard_activity_name: str):
+        self.enable_keyboard_su(keyboard_activity_name)
+        self.set_keyboard_su(keyboard_activity_name)
+
+    def enable_keyboard_su(self, keyboard_activity_name: str):
         self.execute_su_cmd("ime enable %s" % keyboard_activity_name)
+
+    def disable_keyboard_su(self, keyboard_activity_name: str):
+        self.execute_su_cmd("ime disable %s" % keyboard_activity_name)
+
+    def set_keyboard_su(self, keyboard_activity_name: str):
         self.execute_su_cmd("ime set %s" % keyboard_activity_name)
 
     def enable_and_set_adb_keyboard(self):
@@ -2098,18 +2124,49 @@ class AdbWrapper:
         self.write_file(sh_tmp_path, java_code_runner)
 
     def get_app_apk_path(self, app_id: str):
+        ret = None
         output = self.check_output(["shell", "pm", "path", app_id], check=False).strip()
         if output:
+            lines = split_lines(output)
             prefix = "package:"
-            apk_path = output[len(prefix) :]
-            return apk_path
+            apk_path_list = []
+            for it in lines:
+                if it.startswith(prefix):
+                    apk_path = it[len(prefix) :].strip()
+                    apk_path_list.append(apk_path)
+            apk_count = len(apk_path_list)
 
-    def get_app_icon_path(self, app_apk_remote_path: str):
+            if apk_count>0:
+                ret = apk_path_list[0]
+            if apk_count>1:
+                print("Warning: App %s has multiple apk files (%s apks), using the first one: %s" % (app_id, apk_count, ret))
+        if ret is None:
+            print("Warning: App %s not found" % app_id)
+        return ret
+
+    def aapt_dump_badging(self, app_apk_remote_path: str):
         aapt_bin_path = self.install_aapt_binary()
         cmd = [aapt_bin_path, "dump", "badging", app_apk_remote_path]
-        output = self.check_output_shell(cmd)
+        output = self.check_output_su(" ".join(cmd))
+        return output
+
+    def _get_app_name(self, app_apk_remote_path: str):
+        output = self.aapt_dump_badging(app_apk_remote_path)
+        lines = grep_lines(output, whitelist=["application-label"])
+        app_name = lines[0].split(":")[1].strip().strip("'")
+        return app_name
+
+    def get_app_name(self, app_id: str):
+        app_apk_remote_path = self.get_app_apk_path(app_id)
+        # print("Apk remote path:", app_apk_remote_path)
+        assert app_apk_remote_path
+        app_name = self._get_app_name(app_apk_remote_path)
+        return app_name
+
+    def get_app_icon_path(self, app_apk_remote_path: str):
+        output = self.aapt_dump_badging(app_apk_remote_path)
         lines = grep_lines(output, whitelist=["application-icon"])
-        icon_path = lines[0].split("=")[1].strip()
+        icon_path = lines[0].split(":")[1].strip()
         return icon_path
 
     def extract_app_icon(self, app_apk_remote_path: str, icon_remote_dir: str):
@@ -2162,7 +2219,7 @@ class AdbWrapper:
             self.remove_dir(tmpdir, confirm=False)
         self.pull_file(remote_icon_png_path, local_icon_path)
 
-    def convert_icon_xml_to_png(self, icon_xml_path:str, icon_png_path:str):
+    def convert_icon_xml_to_png(self, icon_xml_path: str, icon_png_path: str):
         java_code = f"""String input_icon_path = "{icon_xml_path}";
 String output_icon_path = "{icon_png_path}";
 Drawable myIcon = getResources().getDrawable( input_icon_path);
@@ -2175,23 +2232,22 @@ bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
 """
         self.execute_java_code(java_code)
 
-    def convert_webp_to_png(self, remote_webp_path:str, remote_png_path:str):
+    def convert_webp_to_png(self, remote_webp_path: str, remote_png_path: str):
         # self.convert_icon_xml_to_png(webp_path, png_path)
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            local_png_path = os.path.join(tmpdir, 'icon.png')
-            local_webp_path = os.path.join(tmpdir, 'icon.webp')
+            local_png_path = os.path.join(tmpdir, "icon.png")
+            local_webp_path = os.path.join(tmpdir, "icon.webp")
 
             self.pull_file(remote_webp_path, local_webp_path)
             local_webp_to_png(local_webp_path, local_png_path)
             self.push_file(local_png_path, remote_png_path)
 
-
-    def copy_file(self, src_path:str, dst_path:str):
+    def copy_file(self, src_path: str, dst_path: str):
         self.execute_shell(["cp", src_path, dst_path])
 
-    def remove_dir(self, dir_path:str, confirm=True):
+    def remove_dir(self, dir_path: str, confirm=True):
         if confirm:
             ans = input("Are you sure you want to remove %s? (y/n)" % dir_path)
             if ans.lower() != "y":
@@ -2199,10 +2255,17 @@ bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
                 return
         self.execute(["rm", "-rf", dir_path])
 
+    @property
+    def executable_remote_swm_dir(self):
+        ret = "/data/data/.swm"
+        if not self.test_path_existance_su(ret):
+            self.execute_su_cmd("mkdir -p %s" % ret)
+        return ret
+
     def install_aapt_binary(self):
-        aapt_bin_path = os.path.join(self.remote_swm_dir, "aapt")
-        if not self.test_path_existance(aapt_bin_path):
-            self.push_aapt(aapt_bin_path)
+        aapt_bin_path = os.path.join(self.executable_remote_swm_dir, "aapt")
+        if not self.test_path_existance_su(aapt_bin_path):
+            self.push_aapt_su(aapt_bin_path)
         return aapt_bin_path
 
     def get_android_version(self) -> int:
@@ -2267,16 +2330,16 @@ bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
     def create_dirs(self, dirpath: str):
         self.execute(["shell", "mkdir", "-p", dirpath])
 
-    def push_aapt(self, device_path: Optional[str] = None):
-        if device_path is None:
-            device_path = os.path.join(self.config.android_session_storage_path, "aapt")
+    def push_aapt_su(self, target_path_su:str):
+        device_path = os.path.join(self.config.android_session_storage_path, "aapt")
         device_architecture = self.get_device_architecture()
         bin_arch = get_android_bin_arch(device_architecture)
         local_aapt_path = os.path.join(
             self.config.cache_dir, "android-binaries", "aapt", "aapt-%s" % bin_arch
         )
         self.execute(["push", local_aapt_path, device_path])
-        self.execute(["shell", "chmod", "755", device_path])
+        self.execute_su_cmd("cp %s %s" %(device_path, target_path_su))
+        self.execute_su_cmd("chmod +x %s"% target_path_su)
 
     def pull_session(self, session_name: str, local_path: str):
         remote_path = os.path.join(
@@ -2741,6 +2804,92 @@ class FzfWrapper:
             return ret
 
 
+class ReplManager: ...
+
+
+class ImeManager:
+    def __init__(self, swm: SWM):
+        self.swm = swm
+
+    def get_current_ime(self):
+        ret = self.swm.adb_wrapper.get_current_ime()
+        return ret
+
+    def list(self, display=False):
+        sort_order = {"active": 1, "installed": 2, "selected": 0}
+        ret = self.swm.adb_wrapper.list_installed_imes()
+        # print("Installed IMEs:", ret)
+        if display:
+            active_imes = self.swm.adb_wrapper.list_active_imes()
+            # print("Active IMEs:", active_imes)
+            records = []
+            current_ime = self.get_current_ime()
+            # print("Current IME:", current_ime)
+            for it in ret:
+                app_id = it.split("/")[0]
+                # print("App ID:", app_id)
+                app_name = self.swm.adb_wrapper.get_app_name(app_id)
+                # print("App Name:", app_name)
+                state = "installed"
+                if it in active_imes:
+                    state = "active"
+                if it == current_ime:
+                    state = "selected"
+                rec = dict(app_name=app_name, ime_id=it, state=state)
+                records.append(rec)
+            # load and display records
+            records.sort(key=lambda x: sort_order[x['state']])
+            load_and_print_as_dataframe(records)
+        return ret
+
+    def search(self, query: Optional[str] = None):
+        ime_list = self.list()
+        ret = self.swm.fzf_wrapper.select_item(ime_list, query=query)
+        return ret
+
+    def resolve_ime_query(self, query: str):
+        ime_list = self.list()
+        if query in ime_list:
+            selected_ime = query
+        else:
+            selected_ime = self.search(query=query)
+        return selected_ime
+
+    def switch(self, query: str):
+        ime = self.resolve_ime_query(query)
+        self._switch(ime)
+
+    def activate(self, query: str):
+        ime = self.resolve_ime_query(query)
+        self._activate(ime)
+
+    def deactivate(self, query: str):
+        ime = self.resolve_ime_query(query)
+        self._deactivate(ime)
+
+    def _activate(self, ime_id: str):
+        self.swm.adb_wrapper.enable_keyboard_su(ime_id)
+
+    def _deactivate(self, ime_id: str):
+        self.swm.adb_wrapper.disable_keyboard_su(ime_id)
+
+    def _switch(self, ime_id: str):
+        self.swm.adb_wrapper.enable_and_set_specific_keyboard(ime_id)
+
+    def switch_to_previous(self):
+        previous_ime = self.swm.scrcpy_wrapper.get_previous_ime()
+        if previous_ime:
+            self._switch(previous_ime)
+        else:
+            print("No previous IME")
+
+
+class WirelessManager: ...
+
+
+class FileManager: ...
+
+
 def create_default_config(cache_dir: str):
     return omegaconf.OmegaConf.create(
         {
@@ -2882,6 +3031,9 @@ def main():
         # setup initial environment, download binaries
         download_initial_binaries(SWM_CACHE_DIR, config.github_mirrors)
         return
+    elif args["repl"]:
+        print("Warning: REPL mode is not implemented yet.")
+        return
     init_complete = check_init_complete(SWM_CACHE_DIR)
     if not init_complete:
         print(
@@ -2915,6 +3067,7 @@ def main():
 
     elif args["device"]:
         if args["list"]:
+            last_used = args['last-used']
             swm.device_manager.list(print_formatted=True)
         elif args["search"]:
             device = swm.device_manager.search()
@@ -3021,7 +3174,7 @@ def main():
                 swm.app_manager.list(
                     print_formatted=True,
                     update_cache=update_cache,
-                    additional_fields=dict(
+                    drop_fields=dict(
                         last_used_time=args["with-last-used-time"],
                         type_symbol=with_type,
                     ),
@@ -3030,17 +3183,33 @@ def main():
                 ...
         elif args["ime"]:
             if args["list"]:
-                ...
+                swm.ime_manager.list(display=True)
             elif args["switch"]:
-                ime_name = args["<ime_name>"]
+                query = args["<query>"]
+                swm.ime_manager.switch(query)
+            elif args["activate"]:
+                query = args["<query>"]
+                swm.ime_manager.activate(query)
+            elif args["deactivate"]:
+                query = args["<query>"]
+                swm.ime_manager.deactivate(query)
             elif args["search"]:
-                ...
+                ime_id = swm.ime_manager.search()
+                options = ["activate", "deactivate", "switch"]
+                opt = prompt_for_option_selection(options, "Select an option:")
+                if opt == "activate":
+                    swm.ime_manager.activate(ime_id)
+                elif opt == "deactivate":
+                    swm.ime_manager.deactivate(ime_id)
+                elif opt == "switch":
+                    swm.ime_manager.switch(ime_id)
             elif args["switch-to-previous"]:
-                ...
+                swm.ime_manager.switch_to_previous()
             else:
                 ...
         elif args["session"]:
             if args["list"]:
+                last_used = args['last-used']
                 sessions = swm.session_manager.list()
                 print("Session saved on device %s:" % swm.current_device)
                 print("\t" + ("\n\t".join(sessions)))
