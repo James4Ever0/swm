@@ -14,6 +14,23 @@
 - A more ergonomic way of using your Android phone, especially for professional Android users
 - Boost productivity by multi-tasking on Android
 
+## Requirements
+
+Your Android version must be 10.0 or higher.
+
+USB debugging (ADB) must be enabled.
+
+Your phone need to be rooted, and `com.android.shell` must have root permission.
+
+## Features
+
+- Multi-window, multi-application support
+- Fuzzy search interface for managing apps, sessions, imes, etc.
+- Session persistance
+- Config file customization
+- IME management
+- PC-side UTF-8 input method support
+
 ## Installation
 
 Using `pip`:
@@ -23,7 +40,7 @@ pip install swm-android
 ```
 
 
-## Commandline
+## Command line
 
 ```
 SWM - Scrcpy Window Manager
