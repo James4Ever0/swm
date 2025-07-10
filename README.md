@@ -7,11 +7,11 @@
 
 ## Use cases
 
-- Want to work but cannot put down your phone
+- Use your phone at work
 - Share data between PC and Android device
 - Bring your work wherever you go
-- Want to experience something like Samsung Dex but do not have a compatible device
-- A more ergonomic way of using your Android phone, especially for professional Android users
+- Experience something like Samsung Dex
+- A more ergonomic way of using your Android phone
 - Boost productivity by multi-tasking on Android
 
 ## Requirements
@@ -45,8 +45,9 @@ pip install swm-android
 SWM - Scrcpy Window Manager
 
 Usage:
-  swm init
-  swm repl
+  swm init [force]
+  swm [options] repl
+  swm [options] healthcheck
   swm [options] adb [<adb_args>...]
   swm [options] scrcpy [<scrcpy_args>...]
   swm [options] app run <query> [no-new-display] [<init_config>]
@@ -95,5 +96,5 @@ Environment variables:
                 Maximum possible command suggestions when failed to parse user input
   ADB           Path to ADB binary (overrides SWM managed ADB)
   SCRCPY        Path to SCRCPY binary (overrides SWM managed SCRCPY)
-  FZF           Path to FZF binary (overrides SWM  managed FZF)
+  FZF           Path to FZF binary (overrides SWM managed FZF)
 ```
