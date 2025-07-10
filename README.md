@@ -25,10 +25,9 @@ Your phone need to be rooted, and `com.android.shell` must have root permission.
 ## Features
 
 - Multi-window, multi-application support
-- Fuzzy search interface for managing apps, sessions, imes, etc.
+- Fuzzy search interface for managing apps, sessions, input methods, etc.
 - Session persistance
 - Config file customization
-- IME management
 - PC-side UTF-8 input method support
 
 ## Installation
