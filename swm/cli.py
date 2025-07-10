@@ -1601,13 +1601,16 @@ class SessionManager:
         sessions = self.list()
         return self.swm.fzf_wrapper.select_item(sessions, query=query)
 
-    def list(self) -> List[str]:
+    def list(self, show_last_used=False, print_formatted=False) -> List[str]:
         session_json_paths = [
             f for f in self.adb_wrapper.listdir(self.session_dir) if f.endswith(".json")
         ]
         session_names = [os.path.splitext(it)[0] for it in session_json_paths]
         # session_names.append("default")
         # TODO: no one can save a session named "default", or one may customize this behavior through swm pc/android config, somehow allow this to happen
+        if print_formatted:
+            print("Session saved on device %s:" % self.adb_wrapper.device)
+            print("\t" + ("\n\t".join(session_names)))
         return session_names
 
     def get_pc_info(self):
@@ -3068,7 +3071,7 @@ def main():
     elif args["device"]:
         if args["list"]:
             last_used = args['last-used']
-            swm.device_manager.list(print_formatted=True)
+            swm.device_manager.list(print_formatted=True, show_last_used = last_used)
         elif args["search"]:
             device = swm.device_manager.search()
             ans = prompt_for_option_selection(["select", "name"], "Choose an option:")
@@ -3210,9 +3213,7 @@ def main():
         elif args["session"]:
             if args["list"]:
                 last_used = args['last-used']
-                sessions = swm.session_manager.list()
-                print("Session saved on device %s:" % swm.current_device)
-                print("\t" + ("\n\t".join(sessions)))
+                swm.session_manager.list(show_last_used=last_used, print_formatted=True)
             elif args["search"]:
                 session_name = swm.session_manager.search()
                 opt = prompt_for_option_selection(
