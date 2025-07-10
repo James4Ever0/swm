@@ -909,6 +909,7 @@ class SWM:
         self.scrcpy_wrapper.set_device(device_id)
 
         self.scrcpy_wrapper.cleanup_scrcpy_proc_pid_files()
+        self.adb_wrapper.stay_awake_while_plugged_in()
 
         # now check for android version
         self.check_android_version()
@@ -1099,8 +1100,9 @@ class AppManager:
         # --window-title=<title>
         device_id = self.swm.adb_wrapper.device
         device_name = self.swm.adb_wrapper.get_device_name(device_id)
-        app_name = package_id
-        # app_name = self.swm.adb_wrapper.get_app_name(package_id)
+        # TODO: make the window title format configurable
+        # app_name = package_id
+        app_name = self.swm.adb_wrapper.get_app_name(package_id)
         return "%s - %s" % (app_name, device_name)
 
     def check_app_existance(self, app_id):
@@ -1129,7 +1131,7 @@ class AppManager:
         return app_config
 
     def run(
-        self, app_id: str, init_config: Optional[str] = None, new_display: bool = True
+        self, app_id: str, init_config: Optional[str] = None, new_display: bool = True,
     ):
         # TODO: recreate the scrcpy instance if it is exited abnormally, such as app closed on device
         import traceback
@@ -1152,13 +1154,13 @@ class AppManager:
 
         if app_config.get("retrieve_app_icon", False):
             icon_path = os.path.join(self.swm.local_icon_dir, "%s.png" % app_id)
-            try:
-                if not os.path.exists(icon_path):
-                    self.retrieve_app_icon(app_id, icon_path)
-                env["SCRCPY_ICON_PATH"] = icon_path
-            except:
-                traceback.print_exc() # TODO: print traceback only if verbose mode is on
-                print("Failed to retrieve app icon for:", app_id)
+            # try:
+            if not os.path.exists(icon_path):
+                self.retrieve_app_icon(app_id, icon_path)
+            env["SCRCPY_ICON_PATH"] = icon_path
+            # except:
+            #     traceback.print_exc() # TODO: print traceback only if verbose mode is on
+            #     print("Failed to retrieve app icon for:", app_id)
         # Add window config if exists
         # print("Env:", env)
         win = app_config.get("window", None)
@@ -1835,6 +1837,10 @@ class AdbWrapper:
         self.remote_swm_dir = self.config.android_session_storage_path
         self.initialize()
         self.remote = self
+    
+    def stay_awake_while_plugged_in(self):
+        cmd = "settings put global stay_on_while_plugged_in 7"
+        self.execute_su_cmd(cmd)
 
     def listdir(self, path: str):
         assert self.test_path_existance(path)
@@ -2153,8 +2159,8 @@ class AdbWrapper:
         # TODO: Write a java repl accessibke via swm cli
         # TODO: Run termux shell via swm cli, check if termux is installed first
         # TODO: Force airplane mode when using swm
-        print("Executing Java code:")
-        print(java_code)
+        # print("Executing Java code:")
+        # print(java_code)
         # https://github.com/zhanghai/BeeShell
         # adb install --instant app.apk
         # adb shell pm_path=`pm path me.zhanghai.android.beeshell` && apk_path=${pm_path#package:} && `dirname $apk_path`/lib/*/libbsh.so {tmp_path}
@@ -2267,7 +2273,9 @@ class AdbWrapper:
             # use self.remote.* for all remote operations
             print("Icon format:", icon_format)
             if icon_format == "xml":
-                self.convert_icon_xml_to_png(icon_remote_raw_path, remote_icon_png_path)
+                # for debugging
+                # self.copy_file(icon_remote_raw_path, "/sdcard/.swm/debug_icon.xml")
+                self.convert_app_icon_drawable_to_png(app_id, remote_icon_png_path)
             elif icon_format == "png":
                 self.copy_file(icon_remote_raw_path, remote_icon_png_path)
             elif icon_format == "webp":
@@ -2280,21 +2288,47 @@ class AdbWrapper:
         else:
             raise ValueError("Failed to extract app icon on device for:", app_id)
 
-    def convert_icon_xml_to_png(self, icon_xml_path: str, icon_png_path: str):
+    def convert_app_icon_drawable_to_png(self, app_id: str, icon_png_path: str):
+        import traceback
         # check kernel su manager source code for clues?
-        java_code = f"""String input_icon_path = "{icon_xml_path}";
+
+        beeshell_app_id = "me.zhanghai.android.beeshell"
+        java_code = f"""
+import android.graphics.drawable.Drawable;
+//import android.graphics.drawable.BitmapDrawable;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+        
+String app_id = "{app_id}";
 String output_icon_path = "{icon_png_path}";
-Drawable myIcon = Drawable.createFromPath(input_icon_path);
-BitmapDrawable bd = (BitmapDrawable) myIcon;
-Bitmap bitmap = bd.getBitmap();
+
+Drawable d = systemContext.getPackageManager().getApplicationIcon(app_id); 
+
+Bitmap bitmap = Bitmap.createBitmap(d.getIntrinsicWidth(), d.getIntrinsicHeight(), Bitmap.Config.ARGB_8888);
+
+Canvas canvas = new Canvas(bitmap);
+
+d.setBounds(0, 0, canvas.getWidth(), canvas.getHeight());
+d.draw(canvas);
+
 FileOutputStream out = new FileOutputStream(output_icon_path);
+
 bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+out.close();
+
 """
         # TODO: store xml files under /data/data/me.zhanghai.android.beeshell/ and change permission into 777, remove afterwards
-        self.execute_java_code(java_code)
+        try:
+            self.execute_java_code(java_code)
+        except:
+            traceback.print_exc()
+            print("Failed to extract icon.")
+            if self.test_path_existance(icon_png_path):
+                print('Removing output:', icon_png_path)
+                cmd = "rm %s" % icon_png_path
+                self.execute_su_cmd(cmd)
 
     def convert_webp_to_png(self, remote_webp_path: str, remote_png_path: str):
-        # self.convert_icon_xml_to_png(webp_path, png_path)
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
