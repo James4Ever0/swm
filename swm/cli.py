@@ -57,6 +57,11 @@ Environment variables:
   FZF           Path to FZF binary (overrides SWM managed FZF)
 """
 
+# TODO: display different commandline help for rooted and non-rooted devices
+
+# TODO: generate, store and use android device uuid instead of device_id from adb devices for storing icons
+# TODO: create desktop shortcuts for running specific swm commands
+
 # TODO: manage all stdout and stderr into a separate textualize window, then setup a prompt or repl for doing various things like switching ime, starting and managing multiple sessions, managing wifi, bluetooth, files, etc.
 
 # TODO: save session to all devices with the same name, and restore with the same name
@@ -890,6 +895,8 @@ class SWM:
         self.adb_wrapper.set_device(device_id)
         self.scrcpy_wrapper.set_device(device_id)
 
+        self.scrcpy_wrapper.cleanup_scrcpy_proc_pid_files()
+
         # now check for android version
         self.check_android_version()
 
@@ -1112,6 +1119,7 @@ class AppManager:
         self, app_id: str, init_config: Optional[str] = None, new_display: bool = True
     ):
         # TODO: recreate the scrcpy instance if it is exited abnormally, such as app closed on device
+        import traceback
         self.check_clipboard_malfunction()
         if not self.check_app_existance(app_id):
             raise NoAppError(
@@ -1131,10 +1139,15 @@ class AppManager:
 
         if app_config.get("retrieve_app_icon", False):
             icon_path = os.path.join(self.swm.local_icon_dir, "%s.png" % app_id)
-            if not os.path.exists(icon_path):
-                self.retrieve_app_icon(app_id, icon_path)
+            try:
+                if not os.path.exists(icon_path):
+                    self.retrieve_app_icon(app_id, icon_path)
                 env["SCRCPY_ICON_PATH"] = icon_path
+            except:
+                traceback.print_exc() # TODO: print traceback only if verbose mode is on
+                print("Failed to retrieve app icon for:", app_id)
         # Add window config if exists
+        # print("Env:", env)
         win = app_config.get("window", None)
 
         scrcpy_args = []
@@ -2112,6 +2125,8 @@ class AdbWrapper:
         self.install_apk(apk_path)
 
     def execute_java_code(self, java_code):
+        print("Executing Java code:")
+        print(java_code)
         # https://github.com/zhanghai/BeeShell
         # adb install --instant app.apk
         # adb shell pm_path=`pm path me.zhanghai.android.beeshell` && apk_path=${pm_path#package:} && `dirname $apk_path`/lib/*/libbsh.so {tmp_path}
@@ -2228,16 +2243,18 @@ class AdbWrapper:
             else:
                 raise ValueError("Unknown icon format %s" % icon_format)
             self.remove_dir(tmpdir, confirm=False)
-        self.pull_file(remote_icon_png_path, local_icon_path)
+        if self.test_path_existance(remote_icon_png_path):
+            self.pull_file(remote_icon_png_path, local_icon_path)
+        else:
+            raise ValueError("Failed to extract app icon on device for:", app_id)
 
     def convert_icon_xml_to_png(self, icon_xml_path: str, icon_png_path: str):
+        # check kernel su manager source code for clues?
         java_code = f"""String input_icon_path = "{icon_xml_path}";
 String output_icon_path = "{icon_png_path}";
-Drawable myIcon = getResources().getDrawable( input_icon_path);
-Bitmap bitmap = Bitmap.createBitmap(myIcon.getIntrinsicWidth(), myIcon.getIntrinsicHeight(), Bitmap.Config.ARGB_8888);
-Canvas canvas = new Canvas(bitmap);
-myIcon.setBounds(0, 0, canvas.getWidth(), canvas.getHeight());
-myIcon.draw(canvas);
+Drawable myIcon = Drawable.createFromPath(input_icon_path);
+BitmapDrawable bd = (BitmapDrawable) myIcon;
+Bitmap bitmap = bd.getBitmap();
 FileOutputStream out = new FileOutputStream(output_icon_path);
 bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
 """
@@ -2560,7 +2577,7 @@ class ScrcpyWrapper:
         assert proc.stderr
         previous_ime = self.get_previous_ime()
         if not previous_ime:
-            print("Warning: previous ime unrecognized")
+            print("Warning: Previous IME unrecognized")
 
         # TODO: capture stdout for getting new display id
         # TODO: collect missing char into batches and execute once every 0.5 seconds
@@ -2759,8 +2776,12 @@ class ScrcpyWrapper:
         scrcpy_info_list = self.get_running_swm_managed_scrcpy_info_list()
         ret = [it["launch_params"]["package_name"] for it in scrcpy_info_list]
         return ret
+    
+    def cleanup_scrcpy_proc_pid_files(self):
+        # TODO: consider record and revive these inactive ones instead of deleting them, or configure to be "restart=always"
+        self.get_running_swm_managed_scrcpy_info_list(remove_inactive=True)
 
-    def get_running_swm_managed_scrcpy_info_list(self):
+    def get_running_swm_managed_scrcpy_info_list(self, remove_inactive=False):
         import psutil
         import json
 
@@ -2769,15 +2790,19 @@ class ScrcpyWrapper:
         for path in self.list_swm_managed_scrcpy_pid_files():
             with open(path, "r") as f:
                 data = json.load(f)
+            pid = data["pid"]
+            pid = int(pid)
+            if psutil.pid_exists(pid):
                 device_id = data["device_id"]
                 if device_id != self.device:
                     continue
-                pid = data["pid"]
-                pid = int(pid)
-                if psutil.pid_exists(pid):
-                    ret.append(data)
+                ret.append(data)
+            else:
+                if remove_inactive:
+                    print("Removing inactive scrcpy pid file:", path)
+                    os.remove(path)
         return ret
-
+    
     def clipboard_paste_input_text(self, text: str):
         import pyperclip
         import pyautogui
@@ -2802,6 +2827,8 @@ class FzfWrapper:
 
             cmd = [self.fzf_path, "--layout=reverse"]
             if query:
+                # TODO: make this configurable with config file
+                cmd.extend(["--bind", "one:accept"])
                 cmd.extend(["--query", query])
             result = subprocess.run(
                 cmd, stdin=open(tmp.name, "r"), stdout=subprocess.PIPE, text=True
