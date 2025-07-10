@@ -1919,14 +1919,18 @@ class AdbWrapper:
         # adb shell "dumpsys activity activities | grep ResumedActivity" | grep <app_id>
         # topResumedActivity: on top of specific display
         # ResumedActivity: the current focused app
-        output = self.check_output(["shell", "dumpsys", "activity", "activities"])
-        data = parse_dumpsys_active_apps(output)
+        data = self.get_active_apps()
         foreground_apps = data["foreground"]
         # print("Foreground apps:", foreground_apps)
         for it in foreground_apps:
             if (app_id + "/") in (it + "/"):
                 return True
         return False
+
+    def get_active_apps(self):
+        output = self.check_output(["shell", "dumpsys", "activity", "activities"])
+        data = parse_dumpsys_active_apps(output)
+        return data
 
     def check_app_existance(self, app_id):
         apk_path = self.get_app_apk_path(app_id)
@@ -2291,6 +2295,8 @@ class AdbWrapper:
     def convert_app_icon_drawable_to_png(self, app_id: str, icon_png_path: str):
         import traceback
         # check kernel su manager source code for clues?
+        # TODO: only use canvas when BitmapDrawable not working
+        # ref:  https://stackoverflow.com/questions/44447056/convert-adaptiveicondrawable-to-bitmap-in-android-o-preview
 
         beeshell_app_id = "me.zhanghai.android.beeshell"
         java_code = f"""
@@ -2771,6 +2777,12 @@ class ScrcpyWrapper:
             if (
                 last_app_in_display == True and app_in_display == False
             ):  # app terminated
+                # before terminate, analyze the current dump
+                active_apps = self.adb_wrapper.get_active_apps()
+                display_current_focus = self.adb_wrapper.get_display_current_focus()
+                print("Dump info before killing scrcpy:")
+                print("Active apps:", active_apps)
+                print('Display current focus:', display_current_focus)
                 proc.terminate()
                 # os.kill(proc_pid, signal.SIGKILL)
                 break
