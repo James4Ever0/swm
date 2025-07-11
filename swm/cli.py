@@ -480,6 +480,7 @@ class NoDeviceNameError(ValueError): ...
 
 class NoDeviceIdError(ValueError): ...
 
+class DeviceOfflineError(ValueError): ...
 
 def prompt_for_option_selection(
     options: List[str], prompt: str = "Select an option: "
@@ -1136,7 +1137,7 @@ class AppManager:
             print("Device is locked")
         if "off_" in display_and_lock_state:
             clipboard_may_malfunction = True
-            print("Main display is off")
+            print("Main display is off") # TODO: fix false nagative
         if display_and_lock_state == "unknown":
             clipboard_may_malfunction = True
             print("Warning: Device display and lock state unknown")
@@ -1795,6 +1796,7 @@ class SessionManager:
             launch_params = scrcpy_info["launch_params"]
             app_name = launch_params["package_name"]
             is_app_running = self.swm.scrcpy_wrapper.check_app_running(app_name)
+            # TODO: preserve icons in session restoration
             if not is_app_running:
                 # TODO: run this in detached mode, or print log with different pid
                 # TODO: save and restore window positioning
@@ -2594,7 +2596,20 @@ class ScrcpyWrapper:
         self.device = device_id
 
     def _build_cmd(self, args: List[str]) -> List[str]:
+        # TODO: make these configs into a config file, such as "scrcpy_base_args"
         cmd = [self.scrcpy_path]
+        # TODO: display fps when loglevel is verbose
+        # cmd.extend(['--print-fps'])
+        # <scrcpy stdout> INFO: 61 fps
+        # may fail and require su
+        cmd.extend(['--stay-awake'])
+        cmd.extend(['--disable-screensaver'])
+        # so that you can use gboard
+        cmd.extend(["--display-ime-policy=local"])
+        # for capturing paste events
+        # cmd.extend(["--verbosity=verbose"])
+        # <scrcpy stdout> VERBOSE: input: key up   code=67 repeat=0 meta=000000
+        # <scrcpy stdout> VERBOSE: input: clipboard 0 nopaste "<content>"
         if self.device:
             cmd.extend(["-s", self.device])
         cmd.extend(args)
@@ -2628,6 +2643,21 @@ class ScrcpyWrapper:
                     break
 
         start_daemon_thread(monitor_control_port)
+    def is_device_connected(self):
+        assert self.device
+        ret = self.swm.adb_wrapper.check_device_online(self.device)
+        return ret
+    
+    def wait_for_device_reconnect(self):
+        import time
+        print("Waiting for device %s to reconnect" % self.device)
+
+        while True:
+            time.sleep(1)
+            if self.is_device_connected():
+                print("Device %s is online" % self.device)
+                break
+        
 
     def launch_app(
         self,
@@ -2769,7 +2799,7 @@ class ScrcpyWrapper:
             # TODO: close the app when the main process is closed
 
             # check if the device is online.
-            device_online = self.swm.adb_wrapper.check_device_online(self.device)
+            device_online = self.is_device_connected()
             if not device_online:
                 setattr(proc, "terminate_reason", "device_offline")
             # stderr will emit:
@@ -2793,7 +2823,7 @@ class ScrcpyWrapper:
                 if terminate_reason == "unknown":
                     if ex_type == KeyboardInterrupt:
                         terminate_reason = "user_requested"
-                    else:
+                    elif ex_type is not None:
                         terminate_reason = "swm_error"
                 try:
                     os.kill(proc_pid, signal.SIGTERM)
@@ -2813,8 +2843,26 @@ class ScrcpyWrapper:
                         % (swm_scrcpy_proc_pid_path, proc_pid)
                     )
 
+            has_exception = ex_type is not None
+
+            print("Has exception:", has_exception)
             print("Scrcpy terminate reason:", terminate_reason)
             print("Terminate success:", terminate_success)
+
+            setattr(proc, "has_exception", has_exception)
+            setattr(proc, "terminate_reason", terminate_reason)
+            setattr(proc, "terminate_success", terminate_success)
+
+            need_wait_for_device_reconnect = not has_exception and (terminate_reason == "device_offline")
+
+            setattr(proc, "need_wait_for_device_reconnect", need_wait_for_device_reconnect)
+
+            if need_wait_for_device_reconnect:
+                print("Waiting for device to reconnect")
+                self.wait_for_device_reconnect()
+                restart_params = launch_params.copy()
+                restart_params['env'] = env
+                self.launch_app(**restart_params)
 
             no_swm_process_running = not self.has_swm_process_running
 
@@ -2824,8 +2872,13 @@ class ScrcpyWrapper:
                     self.adb_wrapper.enable_and_set_specific_keyboard(previous_ime)
 
     def check_app_in_display(self, app_id: str, display_id: int):
-        app_is_foreground = self.adb_wrapper.check_app_is_foreground(app_id)
-        app_is_in_display = self.adb_wrapper.check_app_in_display(app_id, display_id)
+        assert self.device
+        device_online = self.is_device_connected()
+        if device_online:
+            app_is_foreground = self.adb_wrapper.check_app_is_foreground(app_id)
+            app_is_in_display = self.adb_wrapper.check_app_in_display(app_id, display_id)
+        else:
+            raise DeviceOfflineError("Device %s is offline, cannot obtain app %s status in display %s" % (self.device, app_id, display_id))
 
         if not app_is_foreground:
             print("App %s is not in foreground" % app_id)
@@ -2868,7 +2921,11 @@ class ScrcpyWrapper:
         while True:
             last_app_in_display = app_in_display
             time.sleep(1)
-            app_in_display = self.check_app_in_display(app_id, display_id)
+            try:
+                app_in_display = self.check_app_in_display(app_id, display_id)
+            except DeviceOfflineError as e:
+                print(e.args[0])
+                break
             process_alive = psutil.pid_exists(proc_pid)
             if not process_alive:
                 break
