@@ -29,6 +29,7 @@ Your phone need to be rooted, and `com.android.shell` must have root permission.
 - Session persistance
 - Config file customization
 - PC-side UTF-8 input method support
+- "Did you mean" feature when encountered a wrong command
 
 ## Installation
 
@@ -98,3 +99,11 @@ Environment variables:
   SCRCPY        Path to SCRCPY binary (overrides SWM managed SCRCPY)
   FZF           Path to FZF binary (overrides SWM managed FZF)
 ```
+
+## Related projects
+
+[scrcpy-wrapper](https://github.com/Bluemangoo/scrcpy-wrapper)
+
+[pyscrcpy](https://github.com/yixinNB/pyscrcpy)
+
+[MYScrcpy](https://github.com/me2sy/MYScrcpy)
