@@ -135,6 +135,23 @@ from tinydb.table import Document
 __version__ = "0.1.0"
 
 
+def sha256sum(text: str):
+    import hashlib
+
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def get_file_content(filepath: str):
+    if not os.path.exists(filepath):
+        raise ValueError("File '%s' does not exist" % filepath)
+    if os.path.isfile(filepath):
+        with open(filepath, "r") as f:
+            content = f.read()
+            return content
+    else:
+        raise ValueError("File '%s' is not a file" % filepath)
+
+
 def local_webp_to_png(webp_path: str, png_path: str):
     from PIL import Image
 
@@ -349,7 +366,6 @@ def test_internet_connectivity(url: str, timeout: float):
 def download_initial_binaries(basedir: str, mirror_list: list[str], force=False):
     import pathlib
 
-
     init_flag = get_init_complete_path(basedir)
     if not force:
         if check_init_complete(basedir):
@@ -526,11 +542,6 @@ def select_editor():
 
 def edit_file(filepath: str, editor_binpath: str):
     execute_subprogram(editor_binpath, [filepath])
-
-
-def get_file_content(filepath: str):
-    with open(filepath, "r") as f:
-        return f.read()
 
 
 def edit_content(content: str):
@@ -847,7 +858,7 @@ class SWM:
         self.device_manager = DeviceManager(self)
         self.ime_manager = ImeManager(self)
         self.java_manager = JavaManager(self)
-
+        self.termux_manager = TermuxManager(self)
 
     @property
     def local_icon_dir(self):
@@ -1131,10 +1142,14 @@ class AppManager:
         return app_config
 
     def run(
-        self, app_id: str, init_config: Optional[str] = None, new_display: bool = True,
+        self,
+        app_id: str,
+        init_config: Optional[str] = None,
+        new_display: bool = True,
     ):
         # TODO: recreate the scrcpy instance if it is exited abnormally, such as app closed on device
         import traceback
+
         self.check_clipboard_malfunction()
         if not self.check_app_existance(app_id):
             raise NoAppError(
@@ -1837,7 +1852,23 @@ class AdbWrapper:
         self.remote_swm_dir = self.config.android_session_storage_path
         self.initialize()
         self.remote = self
-    
+
+    def check_file_permission(self, remote_path: str):
+        if self.test_path_existance_su(remote_path):
+            user = self.check_output_su(f"stat -c '%U' '{remote_path}'").strip()
+            return user
+        else:
+            print("Warning: File '%s' not found" % remote_path)
+
+    def sha256sum(self, path: str):
+        if self.test_path_existance_su(path):
+            return self.check_output_su(
+                f"sha256sum '{path}' | awk '{{print $1}}'"
+            ).strip()
+        else:
+            print("Warning: file %s does not exist" % path)
+            return None
+
     def stay_awake_while_plugged_in(self):
         cmd = "settings put global stay_on_while_plugged_in 7"
         self.execute_su_cmd(cmd)
@@ -2154,8 +2185,8 @@ class AdbWrapper:
             self.uninstall_app(app_id)
             print("Trying second installation")
             self.install_apk(apk_path)
-        
-    def uninstall_app(self, app_id:str):
+
+    def uninstall_app(self, app_id: str):
         self.execute(["uninstall", app_id])
 
     def execute_java_code(self, java_code):
@@ -2181,8 +2212,7 @@ class AdbWrapper:
         self.write_file(bsh_tmp_path, java_code)
         self.write_file(sh_tmp_path, java_code_runner)
         # execute
-        self.execute_shell(['sh', sh_tmp_path])
-
+        self.execute_shell(["sh", sh_tmp_path])
 
     def get_app_apk_path(self, app_id: str):
         ret = None
@@ -2294,6 +2324,7 @@ class AdbWrapper:
 
     def convert_app_icon_drawable_to_png(self, app_id: str, icon_png_path: str):
         import traceback
+
         # check kernel su manager source code for clues?
         # TODO: only use canvas when BitmapDrawable not working
         # ref:  https://stackoverflow.com/questions/44447056/convert-adaptiveicondrawable-to-bitmap-in-android-o-preview
@@ -2330,7 +2361,7 @@ out.close();
             traceback.print_exc()
             print("Failed to extract icon.")
             if self.test_path_existance(icon_png_path):
-                print('Removing output:', icon_png_path)
+                print("Removing output:", icon_png_path)
                 cmd = "rm %s" % icon_png_path
                 self.execute_su_cmd(cmd)
 
@@ -2349,12 +2380,26 @@ out.close();
         self.execute_shell(["cp", src_path, dst_path])
 
     def remove_dir(self, dir_path: str, confirm=True):
+        if not self.test_path_existance(dir_path):
+            print("Path does not exist:", dir_path)
+            return
         if confirm:
             ans = input("Are you sure you want to remove %s? (y/n)" % dir_path)
             if ans.lower() != "y":
                 print("Aborting...")
                 return
         self.execute_shell(["rm", "-rf", dir_path])
+
+    def remove_file(self, file_path: str, confirm=True):
+        if not self.test_path_existance(file_path):
+            print("Path does not exist:", file_path)
+            return
+        if confirm:
+            ans = input("Are you sure you want to remove %s? (y/n)" % file_path)
+            if ans.lower() != "y":
+                print("Aborting...")
+                return
+        self.execute_shell(["rm", file_path])
 
     @property
     def executable_remote_swm_dir(self):
@@ -2639,6 +2684,8 @@ class ScrcpyWrapper:
 
         print("Scrcpy PID:", proc_pid)
 
+        self.swm.ime_manager.run_previous_ime_restoration_script()  # BUG: no multicursor across multiple tab of the same file in vscode
+
         self.start_sidecar_scrcpy_app_monitor_thread(package_name, proc)
 
         self.start_sidecar_scrcpy_monitor_control_port(proc)
@@ -2757,6 +2804,7 @@ class ScrcpyWrapper:
         import psutil
 
         proc_pid = proc.pid
+        reconfirming_times = 3
 
         while True:
             time.sleep(0.2)
@@ -2778,11 +2826,22 @@ class ScrcpyWrapper:
                 last_app_in_display == True and app_in_display == False
             ):  # app terminated
                 # before terminate, analyze the current dump
+                for trial in range(reconfirming_times):
+                    time.sleep(1)
+                    print(
+                        "App %s seems not in display %s. Recomfirming %s/%s"
+                        % (app_id, display_id, trial + 1, reconfirming_times)
+                    )
+                    if self.check_app_in_display(app_id, display_id):
+                        app_in_display = True
+                        break
+                if app_in_display:
+                    continue
                 active_apps = self.adb_wrapper.get_active_apps()
                 display_current_focus = self.adb_wrapper.get_display_current_focus()
                 print("Dump info before killing scrcpy:")
                 print("Active apps:", active_apps)
-                print('Display current focus:', display_current_focus)
+                print("Display current focus:", display_current_focus)
                 proc.terminate()
                 # os.kill(proc_pid, signal.SIGKILL)
                 break
@@ -2855,7 +2914,7 @@ class ScrcpyWrapper:
         scrcpy_info_list = self.get_running_swm_managed_scrcpy_info_list()
         ret = [it["launch_params"]["package_name"] for it in scrcpy_info_list]
         return ret
-    
+
     def cleanup_scrcpy_proc_pid_files(self):
         # TODO: consider record and revive these inactive ones instead of deleting them, or configure to be "restart=always"
         self.get_running_swm_managed_scrcpy_info_list(remove_inactive=True)
@@ -2881,7 +2940,7 @@ class ScrcpyWrapper:
                     print("Removing inactive scrcpy pid file:", path)
                     os.remove(path)
         return ret
-    
+
     def clipboard_paste_input_text(self, text: str):
         import pyperclip
         import pyautogui
@@ -2927,6 +2986,30 @@ class ReplManager: ...
 class ImeManager:
     def __init__(self, swm: SWM):
         self.swm = swm
+
+    def run_previous_ime_restoration_script(self):
+        print("Warning: run_previous_ime_restoration_script is not implemented yet")
+        self.install_previous_ime_restoration_script()
+        ...
+
+    def install_previous_ime_restoration_script(self):
+        print("Warning: install_previous_ime_restoration_script is not implemented yet")
+        # execute this method everytime run a new app
+        # run it on android as root
+        # steps:
+        # check if pid file exist
+        #  if pid file not exist, continue execution
+        #  if pid file exist, check if the pid is running
+        #   if pid exist and the pid is running, exit program
+        #   if pid does not exist, remove the pid file
+        # create the pid file with the child pid (about to be detached)
+        # look for "@scrcpy_" unix domain sockets on device
+        #  if "@scrcpy_" unix domain sockets exist, continue execution
+        #  if no "@scrcpy_" unix domain sockets exist, exit loop
+        # look for previous ime record file
+        #   if previous ime file exist, enable and set to previous ime
+        #   if not exist, just exit
+        ...
 
     def get_current_ime(self):
         ret = self.swm.adb_wrapper.get_current_ime()
@@ -3003,30 +3086,139 @@ class ImeManager:
 
 class WirelessManager: ...
 
+
 class FileManager: ...
 
+
 class JavaManager:
-    def __init__(self, swm:SWM):
-        self.swm=swm
-        self.beeshell_app_id = 'me.zhanghai.android.beeshell'
+    def __init__(self, swm: SWM):
+        self.swm = swm
+        self.beeshell_app_id = "me.zhanghai.android.beeshell"
         self.beeshell_invoke_command = "pm_path=`pm path me.zhanghai.android.beeshell` && apk_path=${pm_path#package:} && `dirname $apk_path`/lib/*/libbsh.so"
-    
-    def run(self, script_path:str):
-        if not os.path.exists(script_path):
-            raise ValueError("Script '%s' does not exist" % script_path)
-        if os.path.isfile(script_path):
-            with open(script_path, "r") as f:
-                content = f.read()
-                self.swm.adb_wrapper.execute_java_code(content)
-        else:
-            raise ValueError("Script '%s' is not a file" % script_path)
-    
+
+    def run(self, script_path: str):
+        content = get_file_content(script_path)
+        self.swm.adb_wrapper.execute_java_code(content)
+
     def repl(self):
         self.swm.adb_wrapper.install_beeshell()
         print("Begin REPL:")
         self.swm.adb_wrapper.execute_shell([self.beeshell_invoke_command])
 
-class TermuxManager: ...
+
+class TermuxManager:
+    def __init__(self, swm: SWM):
+        self.swm = swm
+        self.content_init_script = """#!/system/bin/sh
+export PREFIX='/data/data/com.termux/files/usr'
+export HOME='/data/data/com.termux/files/home'
+export LD_LIBRARY_PATH='/data/data/com.termux/files/usr/lib'
+export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/bin/applets:$PATH"
+export LANG='en_US.UTF-8'
+export SHELL='/data/data/com.termux/files/usr/bin/bash'
+cd "$HOME"
+exec "$SHELL" -li $@
+"""
+        self.sha256_init_script = sha256sum(self.content_init_script)
+        self.termux_bash_path = "/data/data/com.termux/files/usr/bin/bash"
+        self.path_init_script = self.swm.adb_wrapper.remote_swm_dir + "/termux_init.sh"
+
+    def check_termux_installed(self):
+        ret = self.swm.adb_wrapper.test_path_existance_su(self.termux_bash_path)
+        return ret
+
+    def check_termux_init_script_installed(self):
+        script_exists = self.swm.adb_wrapper.test_path_existance_su(
+            self.path_init_script
+        )
+        if script_exists:
+            script_sha256 = self.swm.adb_wrapper.sha256sum(self.path_init_script)
+            if script_sha256 == self.sha256_init_script:
+                return True
+            else:
+                print(
+                    "Warning: Termux init script exists (sha256: %s) but is not the same (sha256: %s). Reinstalling"
+                    % (script_sha256, self.sha256_init_script)
+                )
+        else:
+            print(
+                "Warning: Termux init script '%s' does not exist. Installing"
+                % self.path_init_script
+            )
+        return False
+
+    def install_termux_init_script(self):
+        installed = self.check_termux_init_script_installed()
+        if not installed:
+            print("Installing Termux init script")
+            self.swm.adb_wrapper.write_file(
+                self.path_init_script, self.content_init_script
+            )
+            ret = self.check_termux_init_script_installed()
+            if ret:
+                print("Termux init script installed successfully")
+                return ret
+            else:
+                raise ValueError("Termux init script installation failed")
+        else:
+            print("Termux init script already installed")
+            return True
+
+    def install_termux(self):
+        raise NotImplementedError("Termux app installation not implemented")
+
+    def run(self, script_path: str):
+        content = get_file_content(script_path)
+        self.run_script(content)
+    
+    def run_script(self, content:str):
+        remote_tmpdir = "/data/local/tmp"
+        remote_tmp_script_path = f"{remote_tmpdir}/swm.sh"
+        self.swm.adb_wrapper.write_file(remote_tmp_script_path, content)
+        self.shell([remote_tmp_script_path], no_prefix=True)
+        self.swm.adb_wrapper.remove_file(remote_tmp_script_path, confirm=False)
+
+    def exec(self, executable: str):
+        self.shell([executable])
+
+    def get_termux_app_user(self):
+        termux_app_data_path = "/data/data/com.termux"
+        # check file permission
+        user = self.swm.adb_wrapper.check_file_permission(termux_app_data_path)
+        assert user
+        return user
+
+    def shell(self, shell_args: list[str]=[], no_prefix: bool = False):
+        termux_installed = self.check_termux_installed()
+        if not termux_installed:
+            print("Termux not installed. Installing now...")
+            self.install_termux()
+        else:
+            print("Termux already installed")
+        assert self.install_termux_init_script()
+        user = self.get_termux_app_user()
+        termux_data_init_script = "/data/data/com.termux/termux_init.sh"
+        self.swm.adb_wrapper.execute_su_cmd(
+            "cp %s %s" % (self.path_init_script, termux_data_init_script)
+        )
+        if shell_args:
+            if no_prefix:
+                additional_args = " ".join(shell_args)
+            else:
+                additional_args = "-c '%s'" % " ".join(shell_args)
+        else:
+            additional_args = ""
+        self.swm.adb_wrapper.execute_shell(
+            [
+                "-t",  # by DeepSeek
+                "su",
+                "-",
+                user,
+                "-c",
+                "sh %s %s" % (termux_data_init_script, additional_args),
+            ]
+        )
+
 
 def create_default_config(cache_dir: str):
     return omegaconf.OmegaConf.create(
@@ -3048,11 +3240,14 @@ def create_default_config(cache_dir: str):
             "use_shared_app_config": True,
             "binaries": {
                 "adb": {"version": "1.0.41"},
-                "scrcpy": {"version": "2.0"},
-                "fzf": {"version": "0.42.0"},
-                "adbkeyboard": {"version": "1.0.0"},
-                "beeshell": {"version": "1.0.0"},
-                "aapt": {"version": "1.0.0"},
+                "scrcpy": {"version": "3.3.1"},
+                "fzf": {"version": "0.62.0"},
+                "adbkeyboard": {"version": "2.0"},
+                "beeshell": {"version": "1.0.3"},  # TODO: figure out version of apks
+                "beanshell": {
+                    "version": "2.1.1"
+                },  # TODO: replace bsh gui with bsh cli (core) on github release, "java-jar.zip"
+                "aapt": {"version": "v0.2"},
             },
         }
     )
@@ -3350,6 +3545,8 @@ def main():
             else:
                 ...
         elif args["java"]:
+            # TODO: use beanshell instead of beeshell
+            # adb shell "CLASSPATH=/data/local/tmp/bsh-2.0b6.jar app_process /system/bin bsh.Interpreter -c 'import android.graphics.*; print(Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888));'"
             if args["run"]:
                 script_path = args["<script_path>"]
                 # run the script
@@ -3359,7 +3556,21 @@ def main():
             else:
                 ...
         elif args["termux"]:
-            print("Warning: Termux commands not implemented yet")
+            if args["run"]:
+                script_path = args["<script_path>"]
+                swm.termux_manager.run(script_path)
+            elif args["exec"]:
+                executable = args["<executable>"]
+                swm.termux_manager.exec(executable)
+            elif args["shell"]:
+                shell_args = args["<shell_args>"]
+                if shell_args:
+                    script_content = " ".join(shell_args)
+                    swm.termux_manager.run_script(script_content)
+                else:
+                    swm.termux_manager.shell()
+            else:
+                ...
         elif args["session"]:
             if args["list"]:
                 last_used = args["last-used"]
