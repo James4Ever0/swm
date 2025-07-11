@@ -62,6 +62,12 @@ Environment variables:
   FZF           Path to FZF binary (overrides SWM managed FZF)
 """
 
+# TODO: terminate scrcpy with the same app_id running when running new app
+
+# TODO: infer the reason of scrcpy closing, like device_disconnect, app_gone, user_requested, new_instance, unknown
+
+# TODO: restart application if the device is physically disconnected at the time it connects back
+
 # TODO: paste from pc to device using adb keyboard by listening for paste events when clipboard fails
 
 # TODO: fix IME issues using custom scrcpy GUI such as https://github.com/me2sy/MYScrcpy
@@ -1855,6 +1861,11 @@ class AdbWrapper:
         self.initialize()
         self.remote = self
 
+    def check_device_online(self, device_id: str):
+        active_device_ids = self.list_device_ids()
+        ret = device_id in active_device_ids
+        return ret
+
     def check_file_permission(self, remote_path: str):
         if self.test_path_existance_su(remote_path):
             user = self.check_output_su(f"stat -c '%U' '{remote_path}'").strip()
@@ -2633,6 +2644,9 @@ class ScrcpyWrapper:
         import signal
         import psutil
         import json
+        import sys
+
+        # import time
 
         args = []
 
@@ -2686,6 +2700,8 @@ class ScrcpyWrapper:
 
         print("Scrcpy PID:", proc_pid)
 
+        self.cleanup_scrcpy_proc_pid_files(app_id=package_name)
+
         self.swm.ime_manager.run_previous_ime_restoration_script()  # BUG: no multicursor across multiple tab of the same file in vscode
 
         self.start_sidecar_scrcpy_app_monitor_thread(package_name, proc)
@@ -2717,9 +2733,9 @@ class ScrcpyWrapper:
             no_audio=no_audio,
             use_adb_keyboard=use_adb_keyboard,
         )
+        swm_scrcpy_proc_pid_path = self.generate_swm_scrcpy_proc_pid_path()
         try:
             # write the pid to the path
-            swm_scrcpy_proc_pid_path = self.generate_swm_scrcpy_proc_pid_path()
             with open(swm_scrcpy_proc_pid_path, "w") as f:
                 data = dict(
                     pid=proc_pid, device_id=self.device, launch_params=launch_params
@@ -2748,25 +2764,57 @@ class ScrcpyWrapper:
                 # [server] WARN: Could not inject char u+4f60
                 # TODO: use adb keyboard for pasting text from clipboard
         finally:
+            ex_type, ex_value, ex_traceback = sys.exc_info()
 
             # TODO: close the app when the main process is closed
-            # kill by pid, if alive
 
+            # check if the device is online.
+            device_online = self.swm.adb_wrapper.check_device_online(self.device)
+            if not device_online:
+                setattr(proc, "terminate_reason", "device_offline")
+            # stderr will emit:
+            # WARN: Device disconnected
+
+            terminate_reason = "unknown"
+
+            if hasattr(proc, "terminate_reason"):
+                terminate_reason = getattr(proc, "terminate_reason")
+            else:
+                # read the reason from pid file
+                if os.path.exists(swm_scrcpy_proc_pid_path):
+                    with open(swm_scrcpy_proc_pid_path, "r") as f:
+                        data = json.load(f)
+                        assert type(data) == dict
+                        terminate_reason = data.get("terminate_reason", "unknown")
+
+            # kill by pid, if alive
             if psutil.pid_exists(proc_pid):
+                # probably user_requested, or error
+                if terminate_reason == "unknown":
+                    if ex_type == KeyboardInterrupt:
+                        terminate_reason = "user_requested"
+                    else:
+                        terminate_reason = "swm_error"
                 try:
-                    os.kill(proc_pid, signal.SIGKILL)
+                    os.kill(proc_pid, signal.SIGTERM)
                     proc.kill()
                 except:
                     print("Error while trying to kill the scrcpy process %s" % proc_pid)
 
+            terminate_success = False
+            # time.sleep(0.5) # reduce false nagative of terminate_success
             if os.path.exists(swm_scrcpy_proc_pid_path):
                 if not psutil.pid_exists(proc_pid):
+                    terminate_success = True
                     os.remove(swm_scrcpy_proc_pid_path)
                 else:
                     print(
-                        "Not removing PID file %s since the scrcpy process %s is still running"
+                        "Not removing PID file %s since the scrcpy process %s is still running (termination might be pending)"
                         % (swm_scrcpy_proc_pid_path, proc_pid)
                     )
+
+            print("Scrcpy terminate reason:", terminate_reason)
+            print("Terminate success:", terminate_success)
 
             no_swm_process_running = not self.has_swm_process_running
 
@@ -2814,8 +2862,8 @@ class ScrcpyWrapper:
                 display_id = getattr(proc, "display_id")
                 break
 
-        last_app_in_display = app_in_display = self.check_app_in_display(
-            app_id, display_id
+        last_app_in_display = app_in_display = (
+            True  # self.check_app_in_display(app_id, display_id)
         )
         while True:
             last_app_in_display = app_in_display
@@ -2828,10 +2876,11 @@ class ScrcpyWrapper:
                 last_app_in_display == True and app_in_display == False
             ):  # app terminated
                 # before terminate, analyze the current dump
+                # TODO: restart app in given display, using adb shell
                 for trial in range(reconfirming_times):
                     time.sleep(1)
                     print(
-                        "App %s seems not in display %s. Recomfirming %s/%s"
+                        "App %s seems not in display %s. Reconfirming %s/%s"
                         % (app_id, display_id, trial + 1, reconfirming_times)
                     )
                     if self.check_app_in_display(app_id, display_id):
@@ -2845,6 +2894,8 @@ class ScrcpyWrapper:
                 print("Active apps:", active_apps)
                 print("Display current focus:", display_current_focus)
                 proc.terminate()
+                if not hasattr(proc, "terminate_reason"):
+                    setattr(proc, "terminate_reason", "app_gone")
                 # os.kill(proc_pid, signal.SIGKILL)
                 break
 
@@ -2917,25 +2968,48 @@ class ScrcpyWrapper:
         ret = [it["launch_params"]["package_name"] for it in scrcpy_info_list]
         return ret
 
-    def cleanup_scrcpy_proc_pid_files(self):
+    def cleanup_scrcpy_proc_pid_files(self, app_id: Optional[str] = None):
         # TODO: consider record and revive these inactive ones instead of deleting them, or configure to be "restart=always"
-        self.get_running_swm_managed_scrcpy_info_list(remove_inactive=True)
+        self.get_running_swm_managed_scrcpy_info_list(
+            remove_inactive=True, remove_app_id=app_id
+        )
 
-    def get_running_swm_managed_scrcpy_info_list(self, remove_inactive=False):
+    def get_running_swm_managed_scrcpy_info_list(
+        self, remove_inactive=False, remove_app_id: Optional[str] = None
+    ):
         import psutil
         import json
+        import signal
 
         ret = []
         assert self.device
         for path in self.list_swm_managed_scrcpy_pid_files():
             with open(path, "r") as f:
                 data = json.load(f)
+            assert type(data) == dict
+            terminate_reason = data.get("terminate_reason", None)
+            if terminate_reason:
+                os.remove(path)
             pid = data["pid"]
             pid = int(pid)
             if psutil.pid_exists(pid):
+                app_id = data["launch_params"]["package_name"]
                 device_id = data["device_id"]
                 if device_id != self.device:
                     continue
+                else:
+                    if remove_app_id and app_id == remove_app_id:
+                        print(
+                            "Terminating old scrcpy process (PID: %s) for app_id:"
+                            % pid,
+                            app_id,
+                        )
+                        os.kill(pid, signal.SIGTERM)
+                        # now write the file
+                        data["terminate_reason"] = "new_instance"
+                        with open(path, "w") as f:
+                            json.dump(data, f)
+                        continue
                 ret.append(data)
             else:
                 if remove_inactive:
@@ -3102,17 +3176,17 @@ class JavaManager:
         content = get_file_content(script_path)
         self.run_script(content)
 
-    def run_script(self, content:str):
+    def run_script(self, content: str):
         self.swm.adb_wrapper.execute_java_code(content)
 
-    def shell(self, shell_args:list[str] = []):
+    def shell(self, shell_args: list[str] = []):
         if shell_args:
             script_content = " ".join(shell_args)
             self.run_script(script_content)
         else:
             print("No script provided, start REPL")
             self.swm.adb_wrapper.install_beeshell()
-            self.swm.adb_wrapper.execute_shell(['-t', self.beeshell_invoke_command])
+            self.swm.adb_wrapper.execute_shell(["-t", self.beeshell_invoke_command])
 
 
 class TermuxManager:
@@ -3179,8 +3253,8 @@ exec "$SHELL" -li $@
     def run(self, script_path: str):
         content = get_file_content(script_path)
         self.run_script(content)
-    
-    def run_script(self, content:str):
+
+    def run_script(self, content: str):
         remote_tmpdir = "/data/local/tmp"
         remote_tmp_script_path = f"{remote_tmpdir}/swm.sh"
         self.swm.adb_wrapper.write_file(remote_tmp_script_path, content)
@@ -3197,7 +3271,7 @@ exec "$SHELL" -li $@
         assert user
         return user
 
-    def shell(self, shell_args: list[str]=[], no_prefix: bool = False):
+    def shell(self, shell_args: list[str] = [], no_prefix: bool = False):
         termux_installed = self.check_termux_installed()
         if not termux_installed:
             print("Termux not installed. Installing now...")
@@ -3561,7 +3635,7 @@ def main():
                 # run the script
                 swm.java_manager.run(script_path)
             elif args["shell"]:
-                shell_args = args['<shell_args>']
+                shell_args = args["<shell_args>"]
                 swm.java_manager.shell(shell_args)
             else:
                 ...
