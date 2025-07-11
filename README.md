@@ -7,11 +7,11 @@
 
 ## Use cases
 
+- Improve ergonimics
 - Use your phone at work
 - Share data between PC and Android device
 - Bring your work wherever you go
 - Experience something like Samsung Dex
-- A more ergonomic way of using your Android phone
 - Boost productivity by multi-tasking on Android
 
 ## Requirements
@@ -20,7 +20,7 @@ Your Android version must be 10.0 or higher.
 
 USB debugging (ADB) must be enabled.
 
-Your phone need to be rooted, and `com.android.shell` must have root permission.
+Your phone needs to be rooted, and `com.android.shell` must have root permission.
 
 ## Features
 
@@ -33,12 +33,13 @@ Your phone need to be rooted, and `com.android.shell` must have root permission.
 
 ## Installation
 
+This application is running on your PC, with your Android device connected to it via ADB.
+
 Using `pip`:
 
 ```bash
 pip install swm-android
 ```
-
 
 ## Command line
 
