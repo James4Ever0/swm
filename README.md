@@ -27,9 +27,10 @@ Your phone needs to be rooted, and `com.android.shell` must have root permission
 - Multi-window, multi-application support
 - Fuzzy search interface for managing apps, sessions, input methods, etc.
 - Session persistance
+- Reopen applications at device reconnection
 - Config file customization
 - PC-side UTF-8 input method support
-- "Did you mean" feature when encountered a wrong command
+- "Did you mean" suggestions when encountered a wrong command
 
 ## Installation
 
@@ -113,3 +114,5 @@ Environment variables:
 [pyscrcpy](https://github.com/yixinNB/pyscrcpy)
 
 [MYScrcpy](https://github.com/me2sy/MYScrcpy)
+
+[Vysor](https://github.com/koush/vysor.io)
