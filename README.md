@@ -63,6 +63,11 @@ Usage:
   swm [options] ime (switch|activate|deactivate) <query>
   swm [options] ime search
   swm [options] ime switch-to-previous
+  swm [options] java run <script_path>
+  swm [options] java shell
+  swm [options] termux run <script_path>
+  swm [options] termux exec <executable>
+  swm [options] termux shell [<shell_args>...]
   swm [options] session list [last-used]
   swm [options] session search [index]
   swm [options] session restore [session_name]
