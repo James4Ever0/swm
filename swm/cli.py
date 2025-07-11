@@ -101,8 +101,9 @@ Environment variables:
 # deepseek says "adb forward" is suitable for this scenario
 
 # TODO: figure out the protocol used in scrcpy-server, change resolution on the fly using the protocol, track down the port forwarded per scrcpy session
-# Note: seems scrcpy is not using adb for port forwarding
+# Note: seems adb is not showing scrcpy forwarded ports
 # maybe it is communicated via unix socket, via adb shell?
+# or using a separate adb server?
 # android.net.LocalServerSocket
 # adb shell cat /proc/net/unix
 # adb forward tcp:<PC_PORT> localabstract:<ABSTRACT_SOCKET>
@@ -494,7 +495,9 @@ class NoDeviceNameError(ValueError): ...
 
 class NoDeviceIdError(ValueError): ...
 
+
 class DeviceOfflineError(ValueError): ...
+
 
 def prompt_for_option_selection(
     options: List[str], prompt: str = "Select an option: "
@@ -561,6 +564,7 @@ def select_editor():
         "No editor found. Please install one of the following editors:",
         ", ".join(possible_editors),
     )
+
 
 # TODO: download nano editor binary, use it to edit files despite the operate system
 # TODO: find a pure python text editor in textualize, or a package for this purpose, or write one
@@ -1152,7 +1156,7 @@ class AppManager:
             print("Device is locked")
         if "off_" in display_and_lock_state:
             clipboard_may_malfunction = True
-            print("Main display is off") # TODO: fix false nagative
+            print("Main display is off")  # TODO: fix false nagative
             # mHoldingWakeLockSuspendBlocker=false
             # mHoldingDisplaySuspendBlocker=true
         if display_and_lock_state == "unknown":
@@ -2620,11 +2624,15 @@ class ScrcpyWrapper:
         # <scrcpy stdout> INFO: 61 fps
         # may fail and require su
         # cmd.extend(['--keyboard=uhid'])
-        cmd.extend(['--prefer-text']) # this flag shall be enabled when using the adbkeyboard to input text from PC IME, to make sure ASCII chars injected
-        cmd.extend(['--stay-awake'])
-        cmd.extend(['--disable-screensaver'])
+        cmd.extend(
+            ["--prefer-text"]
+        )  # this flag shall be enabled when using the adbkeyboard to input text from PC IME, to make sure ASCII chars injected
+        cmd.extend(["--stay-awake"])
+        cmd.extend(["--disable-screensaver"])
         # so that you can use gboard
-        cmd.extend(["--display-ime-policy=local"]) # preferred for Gboard, if only the gray bar of adbkeyboard can be hidden (a custom build, or any alternative maybe?)
+        cmd.extend(
+            ["--display-ime-policy=local"]
+        )  # preferred for Gboard, if only the gray bar of adbkeyboard can be hidden (a custom build, or any alternative maybe?)
         # TODO: change scrcpy PC IME input prompt starting location based on android device cursor location, first get the cursor location (how did gboard know that?)
         # cmd.extend(["--display-ime-policy=hide"]) # not working with any keyboard
         # for capturing paste events
@@ -2664,13 +2672,15 @@ class ScrcpyWrapper:
                     break
 
         start_daemon_thread(monitor_control_port)
+
     def is_device_connected(self):
         assert self.device
         ret = self.swm.adb_wrapper.check_device_online(self.device)
         return ret
-    
+
     def wait_for_device_reconnect(self):
         import time
+
         print("Waiting for device %s to reconnect" % self.device)
 
         while True:
@@ -2678,7 +2688,6 @@ class ScrcpyWrapper:
             if self.is_device_connected():
                 print("Device %s is online" % self.device)
                 break
-        
 
     def launch_app(
         self,
@@ -2794,7 +2803,9 @@ class ScrcpyWrapper:
                 content_data = json.dumps(data, indent=4, ensure_ascii=False)
                 f.write(content_data)
                 # TODO: write additional launch parameters here so we can create a session based on these files
-            self.start_sidecar_unicode_input(proc=proc, use_adb_keyboard=use_adb_keyboard)
+            self.start_sidecar_unicode_input(
+                proc=proc, use_adb_keyboard=use_adb_keyboard
+            )
             for line in proc.stderr:
                 captured_line = line.strip()
                 if self.config.verbose:
@@ -2806,9 +2817,11 @@ class ScrcpyWrapper:
                     char_repr = captured_line[len(unicode_char_warning) :].strip()
                     char_str = convert_unicode_escape(char_repr)
                     if char_str:
-                        pending_unicode_input = getattr(proc, "pending_unicode_input", "")
+                        pending_unicode_input = getattr(
+                            proc, "pending_unicode_input", ""
+                        )
                         pending_unicode_input += char_str
-                        setattr(proc, "pending_unicode_input",pending_unicode_input)
+                        setattr(proc, "pending_unicode_input", pending_unicode_input)
                     # TODO: use clipboard set and paste instead
                     # TODO: make unicode_input_method a text based config, opening the main display to show the default input method interface when no clipboard input or adb keyboard is enabled
                     # TODO: hover the main display on the focused new window to show input candidates
@@ -2872,18 +2885,24 @@ class ScrcpyWrapper:
             print("Terminate success:", terminate_success)
 
             setattr(proc, "has_exception", has_exception)
-            setattr(proc, "terminate_reason", terminate_reason) # if at this point terminate_reason is 'unknown', probably it is killed using GUI or operating system
+            setattr(
+                proc, "terminate_reason", terminate_reason
+            )  # if at this point terminate_reason is 'unknown', probably it is killed using GUI or operating system
             setattr(proc, "terminate_success", terminate_success)
 
-            need_wait_for_device_reconnect = not has_exception and (terminate_reason == "device_offline")
+            need_wait_for_device_reconnect = not has_exception and (
+                terminate_reason == "device_offline"
+            )
 
-            setattr(proc, "need_wait_for_device_reconnect", need_wait_for_device_reconnect)
+            setattr(
+                proc, "need_wait_for_device_reconnect", need_wait_for_device_reconnect
+            )
 
             if need_wait_for_device_reconnect:
                 print("Waiting for device to reconnect")
                 self.wait_for_device_reconnect()
                 restart_params = launch_params.copy()
-                restart_params['env'] = env
+                restart_params["env"] = env
                 self.launch_app(**restart_params)
 
             no_swm_process_running = not self.has_swm_process_running
@@ -2893,33 +2912,54 @@ class ScrcpyWrapper:
                     print("Reverting to previous ime")
                     self.adb_wrapper.enable_and_set_specific_keyboard(previous_ime)
 
-
-    def start_sidecar_unicode_input(self, proc:subprocess.Popen, use_adb_keyboard:bool, poll_interval=0.1):
+    def start_sidecar_unicode_input(
+        self,
+        proc: subprocess.Popen,
+        use_adb_keyboard: bool,
+        poll_interval=0.1,
+        pid_check_interval=1,
+    ):
         import time
         import psutil
+
         def unicode_input():
             proc_pid = proc.pid
+            last_pid_check_reltime = 0
             while True:
                 time.sleep(poll_interval)
-                if not psutil.pid_exists(proc_pid): break
-                if getattr(proc, "terminate_reason", ""): break
+                last_pid_check_reltime += poll_interval
+                if last_pid_check_reltime >= pid_check_interval:
+                    last_pid_check_reltime = 0
+                    if not psutil.pid_exists(proc_pid):
+                        break
+                if getattr(proc, "terminate_reason", ""):
+                    break
                 pending_unicode_input = getattr(proc, "pending_unicode_input", "")
-                if not pending_unicode_input: continue
-                else: setattr(proc, "pending_unicode_input", "")
+                if not pending_unicode_input:
+                    continue
+                else:
+                    setattr(proc, "pending_unicode_input", "")
                 if use_adb_keyboard:
                     # TODO: check if the adb keyboard is "really" activated (with the grey bar underneath the screen) programatically before broadcasting the intent
                     self.adb_wrapper.adb_keyboard_input_text(pending_unicode_input)
                 else:
                     self.clipboard_paste_input_text(pending_unicode_input)
+
         start_daemon_thread(unicode_input)
+
     def check_app_in_display(self, app_id: str, display_id: int):
         assert self.device
         device_online = self.is_device_connected()
         if device_online:
             app_is_foreground = self.adb_wrapper.check_app_is_foreground(app_id)
-            app_is_in_display = self.adb_wrapper.check_app_in_display(app_id, display_id)
+            app_is_in_display = self.adb_wrapper.check_app_in_display(
+                app_id, display_id
+            )
         else:
-            raise DeviceOfflineError("Device %s is offline, cannot obtain app %s status in display %s" % (self.device, app_id, display_id))
+            raise DeviceOfflineError(
+                "Device %s is offline, cannot obtain app %s status in display %s"
+                % (self.device, app_id, display_id)
+            )
 
         if not app_is_foreground:
             print("App %s is not in foreground" % app_id)
@@ -3217,7 +3257,7 @@ class ImeManager:
             load_and_print_as_dataframe(records)
         return ret
 
-    def get_ime_app_name(self, ime_id:str):
+    def get_ime_app_name(self, ime_id: str):
         app_id = ime_id.split("/")[0]
         # print("App ID:", app_id)
         app_name = self.swm.adb_wrapper.get_app_name(app_id)
@@ -3294,8 +3334,48 @@ class JavaManager:
             self.swm.adb_wrapper.install_beeshell()
             self.swm.adb_wrapper.execute_shell(["-t", self.beeshell_invoke_command])
 
+
 # TODO: further restrict user privilege and emulate run_as behavior via chroot, proot or other methods, if Termux is not debug build
 
+# == not working start ==
+
+# getprop ro.debuggable # 0
+# resetprop ro.debuggable 1 # ksu/magisk
+# stop 
+# start
+# (phone will soft-restart so we would not use this method, also ineffective for run-as com.termux, still "not debuggable")
+
+# == not working end ==
+
+# xposed module making app debuggable
+# https://github.com/ttimasdf/XDebuggable
+
+# optionally, run termux sshd service with "am startservice"
+
+# get selinux context
+# su -c 'am startservice -n com.termux/.app.TermuxService -e com.termux.RUN_COMMAND "id > /data/data/com.termux/files/home/id_output.txt"'
+# cat /data/data/com.termux/files/home/id_output.txt
+# or:
+# ls -Z /data/data/com.termux/files/usr/bin/bash
+
+# setenforce 0
+# runcon u:r:untrusted_app_27:s0 id
+# setenforce 1 # run this in a separate thread, 1 sec after above line started
+
+# also you can use root privilege to make all apps debuggable, or just a selected few
+# install termux from github release which is debuggable by default, unlike f-droid ones
+
+# id difference:
+# context=u:r:su:s0
+# context=u:r:untrusted_app_27:s0:c24,c257,c512,c768
+
+# ls -Z /data/data/com.termux/files/usr/var/run/tmux-10280/default difference:
+# u:object_r:app_data_file:s0 
+# u:object_r:app_data_file:s0:c24,c257,c512,c768
+
+# you can just run setenforce 0 to bypass selinux restrictions and may help with tmux permission issues, but dangerous
+
+# TODO: warn the user that tmux may not work properly (permission denied from android termux app if the server is created using swm termux shell)
 class TermuxManager:
     def __init__(self, swm: SWM):
         self.swm = swm
@@ -3767,6 +3847,8 @@ def main():
                     swm.termux_manager.shell()
             else:
                 ...
+        elif args["mount"]:
+            print("Warning: 'mount' is not implemented yet")
         elif args["session"]:
             if args["list"]:
                 last_used = args["last-used"]
