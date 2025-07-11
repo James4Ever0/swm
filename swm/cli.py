@@ -21,7 +21,7 @@ Usage:
   swm [options] ime search
   swm [options] ime switch-to-previous
   swm [options] java run <script_path>
-  swm [options] java shell
+  swm [options] java shell [<shell_args>...]
   swm [options] termux run <script_path>
   swm [options] termux exec <executable>
   swm [options] termux shell [<shell_args>...]
@@ -63,6 +63,8 @@ Environment variables:
 """
 
 # TODO: paste from pc to device using adb keyboard by listening for paste events when clipboard fails
+
+# TODO: fix IME issues using custom scrcpy GUI such as https://github.com/me2sy/MYScrcpy
 
 # TODO: display different commandline help for rooted and non-rooted devices
 
@@ -3098,12 +3100,19 @@ class JavaManager:
 
     def run(self, script_path: str):
         content = get_file_content(script_path)
+        self.run_script(content)
+
+    def run_script(self, content:str):
         self.swm.adb_wrapper.execute_java_code(content)
 
-    def repl(self):
-        self.swm.adb_wrapper.install_beeshell()
-        print("Begin REPL:")
-        self.swm.adb_wrapper.execute_shell([self.beeshell_invoke_command])
+    def shell(self, shell_args:list[str] = []):
+        if shell_args:
+            script_content = " ".join(shell_args)
+            self.run_script(script_content)
+        else:
+            print("No script provided, start REPL")
+            self.swm.adb_wrapper.install_beeshell()
+            self.swm.adb_wrapper.execute_shell(['-t', self.beeshell_invoke_command])
 
 
 class TermuxManager:
@@ -3552,7 +3561,8 @@ def main():
                 # run the script
                 swm.java_manager.run(script_path)
             elif args["shell"]:
-                swm.java_manager.repl()
+                shell_args = args['<shell_args>']
+                swm.java_manager.shell(shell_args)
             else:
                 ...
         elif args["termux"]:
