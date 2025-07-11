@@ -72,6 +72,8 @@ Environment variables:
 
 # TODO: fix IME issues using custom scrcpy GUI such as https://github.com/me2sy/MYScrcpy
 
+# TODO: display placeholder window with text "Device offline", the same icon and window size while waiting device online
+
 # TODO: display different commandline help for rooted and non-rooted devices
 
 # TODO: generate, store and use android device uuid instead of device_id from adb devices for storing icons
@@ -1138,6 +1140,8 @@ class AppManager:
         if "off_" in display_and_lock_state:
             clipboard_may_malfunction = True
             print("Main display is off") # TODO: fix false nagative
+            # mHoldingWakeLockSuspendBlocker=false
+            # mHoldingDisplaySuspendBlocker=true
         if display_and_lock_state == "unknown":
             clipboard_may_malfunction = True
             print("Warning: Device display and lock state unknown")
@@ -2850,7 +2854,7 @@ class ScrcpyWrapper:
             print("Terminate success:", terminate_success)
 
             setattr(proc, "has_exception", has_exception)
-            setattr(proc, "terminate_reason", terminate_reason)
+            setattr(proc, "terminate_reason", terminate_reason) # if at this point terminate_reason is 'unknown', probably it is killed using GUI or operating system
             setattr(proc, "terminate_success", terminate_success)
 
             need_wait_for_device_reconnect = not has_exception and (terminate_reason == "device_offline")
@@ -3041,6 +3045,9 @@ class ScrcpyWrapper:
         ret = []
         assert self.device
         for path in self.list_swm_managed_scrcpy_pid_files():
+            if not os.path.exists(path):
+                print("PID file %s is gone. Skipping" % path)
+                continue
             with open(path, "r") as f:
                 data = json.load(f)
             assert type(data) == dict
@@ -3254,6 +3261,9 @@ export PREFIX='/data/data/com.termux/files/usr'
 export HOME='/data/data/com.termux/files/home'
 export LD_LIBRARY_PATH='/data/data/com.termux/files/usr/lib'
 export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/bin/applets:$PATH"
+export LD_PRELOAD='/data/data/com.termux/files/usr/lib/libtermux-exec-ld-preload.so'
+export TERM='xterm-256color'
+export TMPDIR='/data/data/com.termux/files/usr/tmp'
 export LANG='en_US.UTF-8'
 export SHELL='/data/data/com.termux/files/usr/bin/bash'
 cd "$HOME"
