@@ -70,7 +70,7 @@ Environment variables:
 
 # TODO: Implement swm mount command, mount host volume to device and vice versa
 
-# TODO: use java to collect usagestats, infer app last used time, instead of directory access time enumeration (incorrect)
+# TODO: use java to collect usagestats, infer app last used time, instead of directory access time enumeration (incorrect), or increase enumeration depth? (slow)
 
 # TODO: terminate scrcpy with the same app_id running when running new app
 
@@ -3521,6 +3521,7 @@ def create_default_config(cache_dir: str):
                     "version": "2.1.1"
                 },  # TODO: replace bsh gui with bsh cli (core) on github release, "java-jar.zip"
                 "aapt": {"version": "v0.2"},
+                "gboard": {"version":"15.5.8.766552071"},
             },
         }
     )
