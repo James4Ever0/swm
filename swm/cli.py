@@ -16,6 +16,8 @@ Usage:
   swm [options] app config list
   swm [options] app config (show|edit) <config_name>
   swm [options] app config copy <source_name> <target_name>
+  swm [options] mount <device_path> <host_path>
+  swm [options] mount reverse <host_path> <device_path>
   swm [options] ime list
   swm [options] ime (switch|activate|deactivate) <query>
   swm [options] ime search
@@ -62,6 +64,14 @@ Environment variables:
   FZF           Path to FZF binary (overrides SWM managed FZF)
 """
 
+# TODO: check gboard version, include gboard apk in our binary release, install gboard as our official companion input method app in uhid mode
+
+# TODO: blacklist commands, change execution preferences, configs, commandline help based on healthcheck result per device
+
+# TODO: Implement swm mount command, mount host volume to device and vice versa
+
+# TODO: use java to collect usagestats, infer app last used time, instead of directory access time enumeration (incorrect)
+
 # TODO: terminate scrcpy with the same app_id running when running new app
 
 # TODO: infer the reason of scrcpy closing, like device_disconnect, app_gone, user_requested, new_instance, unknown
@@ -105,6 +115,8 @@ Environment variables:
 # adb reverse --list
 # adb forward --remove
 # adb forward --remove-all
+
+# TODO: list running background apps viewable in taskbar
 
 # TODO: Mark session with PC signature so we can prompt the user if mismatch, like "This is a remote session from xyz, do you trust this machine?"
 # TODO: Sign session and other files on android device with public key to ensure integrity (using gnupg or something)
@@ -550,7 +562,8 @@ def select_editor():
         ", ".join(possible_editors),
     )
 
-
+# TODO: download nano editor binary, use it to edit files despite the operate system
+# TODO: find a pure python text editor in textualize, or a package for this purpose, or write one
 def edit_file(filepath: str, editor_binpath: str):
     execute_subprogram(editor_binpath, [filepath])
 
@@ -2606,10 +2619,14 @@ class ScrcpyWrapper:
         # cmd.extend(['--print-fps'])
         # <scrcpy stdout> INFO: 61 fps
         # may fail and require su
+        # cmd.extend(['--keyboard=uhid'])
+        cmd.extend(['--prefer-text']) # this flag shall be enabled when using the adbkeyboard to input text from PC IME, to make sure ASCII chars injected
         cmd.extend(['--stay-awake'])
         cmd.extend(['--disable-screensaver'])
         # so that you can use gboard
-        cmd.extend(["--display-ime-policy=local"])
+        cmd.extend(["--display-ime-policy=local"]) # preferred for Gboard, if only the gray bar of adbkeyboard can be hidden (a custom build, or any alternative maybe?)
+        # TODO: change scrcpy PC IME input prompt starting location based on android device cursor location, first get the cursor location (how did gboard know that?)
+        # cmd.extend(["--display-ime-policy=hide"]) # not working with any keyboard
         # for capturing paste events
         # cmd.extend(["--verbosity=verbose"])
         # <scrcpy stdout> VERBOSE: input: key up   code=67 repeat=0 meta=000000
@@ -2777,6 +2794,7 @@ class ScrcpyWrapper:
                 content_data = json.dumps(data, indent=4, ensure_ascii=False)
                 f.write(content_data)
                 # TODO: write additional launch parameters here so we can create a session based on these files
+            self.start_sidecar_unicode_input(proc=proc, use_adb_keyboard=use_adb_keyboard)
             for line in proc.stderr:
                 captured_line = line.strip()
                 if self.config.verbose:
@@ -2787,14 +2805,14 @@ class ScrcpyWrapper:
                 if captured_line.startswith(unicode_char_warning):
                     char_repr = captured_line[len(unicode_char_warning) :].strip()
                     char_str = convert_unicode_escape(char_repr)
+                    if char_str:
+                        pending_unicode_input = getattr(proc, "pending_unicode_input", "")
+                        pending_unicode_input += char_str
+                        setattr(proc, "pending_unicode_input",pending_unicode_input)
                     # TODO: use clipboard set and paste instead
                     # TODO: make unicode_input_method a text based config, opening the main display to show the default input method interface when no clipboard input or adb keyboard is enabled
                     # TODO: hover the main display on the focused new window to show input candidates
                     # Note: gboard is useful for single display, but not good for multi display.
-                    if use_adb_keyboard:
-                        self.adb_wrapper.adb_keyboard_input_text(char_str)
-                    else:
-                        self.clipboard_paste_input_text(char_str)
                 # [server] WARN: Could not inject char u+4f60
                 # TODO: use adb keyboard for pasting text from clipboard
         finally:
@@ -2875,6 +2893,25 @@ class ScrcpyWrapper:
                     print("Reverting to previous ime")
                     self.adb_wrapper.enable_and_set_specific_keyboard(previous_ime)
 
+
+    def start_sidecar_unicode_input(self, proc:subprocess.Popen, use_adb_keyboard:bool, poll_interval=0.1):
+        import time
+        import psutil
+        def unicode_input():
+            proc_pid = proc.pid
+            while True:
+                time.sleep(poll_interval)
+                if not psutil.pid_exists(proc_pid): break
+                if getattr(proc, "terminate_reason", ""): break
+                pending_unicode_input = getattr(proc, "pending_unicode_input", "")
+                if not pending_unicode_input: continue
+                else: setattr(proc, "pending_unicode_input", "")
+                if use_adb_keyboard:
+                    # TODO: check if the adb keyboard is "really" activated (with the grey bar underneath the screen) programatically before broadcasting the intent
+                    self.adb_wrapper.adb_keyboard_input_text(pending_unicode_input)
+                else:
+                    self.clipboard_paste_input_text(pending_unicode_input)
+        start_daemon_thread(unicode_input)
     def check_app_in_display(self, app_id: str, display_id: int):
         assert self.device
         device_online = self.is_device_connected()
@@ -3166,9 +3203,7 @@ class ImeManager:
             current_ime = self.get_current_ime()
             # print("Current IME:", current_ime)
             for it in ret:
-                app_id = it.split("/")[0]
-                # print("App ID:", app_id)
-                app_name = self.swm.adb_wrapper.get_app_name(app_id)
+                app_name = self.get_ime_app_name(it)
                 # print("App Name:", app_name)
                 state = "installed"
                 if it in active_imes:
@@ -3182,7 +3217,14 @@ class ImeManager:
             load_and_print_as_dataframe(records)
         return ret
 
+    def get_ime_app_name(self, ime_id:str):
+        app_id = ime_id.split("/")[0]
+        # print("App ID:", app_id)
+        app_name = self.swm.adb_wrapper.get_app_name(app_id)
+        return app_name
+
     def search(self, query: Optional[str] = None):
+        # TODO: show input app name in search
         ime_list = self.list()
         ret = self.swm.fzf_wrapper.select_item(ime_list, query=query)
         return ret
@@ -3252,6 +3294,7 @@ class JavaManager:
             self.swm.adb_wrapper.install_beeshell()
             self.swm.adb_wrapper.execute_shell(["-t", self.beeshell_invoke_command])
 
+# TODO: further restrict user privilege and emulate run_as behavior via chroot, proot or other methods, if Termux is not debug build
 
 class TermuxManager:
     def __init__(self, swm: SWM):
@@ -3623,6 +3666,8 @@ def main():
                         swm.app_manager.show_app_config(app_id)
             elif args["most-used"]:
                 limit = args.get("<count>", 10)
+                if limit is None:
+                    limit = 10
                 limit = int(limit)
                 swm.app_manager.list(most_used=limit, print_formatted=True)
             elif args["run"]:
