@@ -8,6 +8,7 @@ Usage:
   swm [options] healthcheck
   swm [options] adb [<adb_args>...]
   swm [options] scrcpy [<scrcpy_args>...]
+  swm [options] app recent
   swm [options] app run <query> [no-new-display] [<init_config>]
   swm [options] app list [with-last-used-time] [with-type] [update]
   swm [options] app search [with-type] [index]
@@ -308,6 +309,11 @@ def parse_dumpsys_keyvalue_output(output: str):
 def suggest_closest_commands(
     possible_commands: list[dict], user_input: str, limit: int
 ):
+    import warnings
+
+    warnings.filterwarnings(
+        "ignore"
+    )  # so that we don't have to install fuzzywuzzy[speedup] or python-Levenshtein
     from fuzzywuzzy import fuzz
 
     assert limit >= 1, "Limit must be greater than zero, given %s" % limit
@@ -472,6 +478,9 @@ def encode_base64_str(data: str):
 # TODO: use a special apk for running SWM specific root commands instead of direct invocation of adb root shell
 
 # TODO: monitor the output of scrcpy and capture unicode char input accordingly, for sending unicode char to the adbkeyboard
+
+
+class OldInstanceRunning(AssertionError): ...
 
 
 class NoDeviceError(ValueError): ...
@@ -892,11 +901,11 @@ class SWM:
         self.ime_manager = ImeManager(self)
         self.java_manager = JavaManager(self)
         self.termux_manager = TermuxManager(self)
-    
+
     def healthcheck(self):
         print("Warning: Healthcheck is not implemented yet.")
         ...
-    
+
     def repl(self):
         print("Warning: REPL mode is not implemented yet.")
         ...
@@ -989,14 +998,14 @@ class SWM:
         all_devices = self.adb_wrapper.list_device_ids()
         if len(all_devices) == 0:
             # no devices.
-            print("No device is online")
+            print("No online device")
             return
         elif len(all_devices) == 1:
             # only one device.
             device = all_devices[0]
             if default_device is None:
                 print(
-                    "No device is specified in config, using the only device online (%s)"
+                    "No device specified in config, using the only device online (%s)"
                     % device
                 )
             elif device != default_device:
@@ -1012,7 +1021,7 @@ class SWM:
                 return default_device
             else:
                 if default_device is None:
-                    print("No device is specified in config, please select one.")
+                    print("No device specified in config, please select one.")
                 else:
                     print(
                         "Device selected by config (%s) is not online, please select one."
@@ -1055,6 +1064,14 @@ class AppManager:
     def __init__(self, swm: SWM):
         self.swm = swm
         self.config = swm.config
+    
+    def list_recent_apps(self, print_formatted=False):
+
+        ret = self.swm.adb_wrapper.list_recent_apps()
+        
+        if print_formatted:
+            load_and_print_as_dataframe(ret)
+        return ret
 
     def resolve_app_main_activity(self, app_id: str):
         # adb shell cmd package resolve-activity --brief <PACKAGE_NAME> | tail -n 1
@@ -1906,7 +1923,7 @@ class AdbWrapper:
 
     def list_recent_apps(self):
         # dumpsys activity recents  |grep 'Recent #' | grep type=standard
-        output = self.check_output(["dumpsys", "activity", "recents"])
+        output = self.check_output_shell(["dumpsys", "activity", "recents"])
         lines = grep_lines(output, ["Recent #"])
         lines = grep_lines("\n".join(lines), ["type=standard"])
         # parse app id from lines
@@ -1919,6 +1936,9 @@ class AdbWrapper:
                 if kv.startswith("A="):
                     app_id = kv.split(":")[-1].split("/")[0]
                     ret_it["app_id"] = app_id
+                    # we need the app name
+                    app_name = self.get_app_name(app_id)
+                    ret_it['name'] = app_name
                 elif kv.startswith("visible="):
                     visible = None
                     if kv.endswith("=true"):
@@ -1928,6 +1948,7 @@ class AdbWrapper:
                     if visible is not None:
                         ret_it["visible"] = visible
             ret.append(ret_it)
+        
         return ret
 
     def enable_selinux_delayed(self, delay):
@@ -2552,7 +2573,12 @@ out.close();
         return ret
 
     def get_device_architecture(self) -> str:
-        return self.check_output(["shell", "getprop", "ro.product.cpu.abi"])
+        ret = self.check_output(["shell", "getprop", "ro.product.cpu.abi"])
+        if "arm64" in ret:
+            ret = "aarch64"
+        elif "v7" in ret or "armeabi" in ret:
+            ret = "armhf"
+        return ret
 
     def list_device_ids(  # use adbutils instead.
         self,
@@ -2907,6 +2933,11 @@ class ScrcpyWrapper:
         import sys
 
         # import time
+        try:
+            self.cleanup_scrcpy_proc_pid_files(app_id=package_name)
+        except OldInstanceRunning as e:
+            print(e.args[0])
+            return
 
         args = []
 
@@ -2958,6 +2989,7 @@ class ScrcpyWrapper:
         _env = os.environ.copy()
         _env.update(env)
 
+
         print("Acquiring lock")
         lock = self.acquire_app_launch_lock()
         print("Lock acquired")
@@ -2976,7 +3008,6 @@ class ScrcpyWrapper:
 
         print("Scrcpy PID:", proc_pid)
 
-        self.cleanup_scrcpy_proc_pid_files(app_id=package_name)
 
         self.swm.ime_manager.run_previous_ime_restoration_script()  # BUG: no multicursor across multiple tab of the same file in vscode
 
@@ -3129,10 +3160,7 @@ class ScrcpyWrapper:
             )  # if at this point terminate_reason is 'unknown', probably it is killed using GUI or operating system
             setattr(proc, "terminate_success", terminate_success)
 
-            restart_reasons = [
-                "device_offline",
-                "app_gone",
-            ]  # TODO: make this configurable in swm baseconfig
+            restart_reasons = self.config.restart_reasons  # TODO: make this configurable in swm baseconfig
 
             need_restart = not has_exception and (terminate_reason in restart_reasons)
 
@@ -3395,17 +3423,30 @@ class ScrcpyWrapper:
                     continue
                 else:
                     if remove_app_id and app_id == remove_app_id:
-                        print(
-                            "Terminating old scrcpy process (PID: %s) for app_id:"
-                            % pid,
-                            app_id,
-                        )
-                        os.kill(pid, signal.SIGTERM)
-                        # now write the file
-                        data["terminate_reason"] = "new_instance"
-                        with open(path, "w") as f:
-                            json.dump(data, f)
-                        continue
+                        launch_policy = self.swm.config.launch_policy
+                        if launch_policy == "keep_new":
+                            print(
+                                "Terminating old scrcpy process (PID: %s) for app_id:"
+                                % pid,
+                                app_id,
+                            )
+                            os.kill(pid, signal.SIGTERM)
+                            # now write the file
+                            data["terminate_reason"] = "new_instance"
+                            with open(path, "w") as f:
+                                json.dump(data, f)
+                            continue
+                        elif launch_policy == "keep_old":
+                            # kill current process right now
+                            raise OldInstanceRunning(
+                                "An app instance %s for device %s is running, and your launch_policy is %s"
+                                % (app_id, self.device, launch_policy)
+                            )
+                        else:
+                            # TODO: use pydantic to load config
+                            print(
+                                "Ineffective launch policy %s, ignoring" % launch_policy
+                            )
                 ret.append(data)
             else:
                 if remove_inactive:
@@ -3765,12 +3806,13 @@ exec "$SHELL" -li $@
             # disable selinux
             self.swm.adb_wrapper.disable_selinux()
         else:
-            self.swm.adb_wrapper.enable_selinux() # ok if just install app using apt, but we cannot remove it
+            self.swm.adb_wrapper.enable_selinux()  # ok if just install app using apt, but we cannot remove it
             cmd = [
                 "-t",  # by DeepSeek
                 "su",
                 "-",
-                user, "-c",
+                user,
+                "-c",
                 "sh %s %s" % (termux_data_init_script, additional_args),
             ]
         # cannot live with setenforce 1, or this process would die
@@ -3796,7 +3838,11 @@ def create_default_config(cache_dir: str):
                 "https://bgithub.xyz",
                 "https://kgithub.com",
             ],
-            "launch_policy": "keep_new", # keep_new, keep_old
+            "launch_policy": "keep_new",  # keep_new, keep_old
+            "restart_reasons": [
+                "device_offline",
+                "app_gone",
+            ],
             "use_shared_app_config": True,
             "binaries": {
                 "adb": {"version": "1.0.41"},
@@ -4007,7 +4053,9 @@ def main():
             raise NoDeviceError("No available device")
 
         if args["app"]:
-            if args["search"]:
+            if args['recent']:
+                swm.app_manager.list_recent_apps(print_formatted=True)
+            elif args["search"]:
                 app_id = swm.app_manager.search(index=args["index"])
                 with_type = args["with-type"]
                 if app_id is None:
