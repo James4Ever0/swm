@@ -1387,8 +1387,8 @@ scrcpy_args: []
 # install and enable adb keyboard, useful for using PC input method when multi-tasking (deprecated)
 # use_adb_keyboard: true
 
-# ime preference, can be "adbkeyboard", "gboard", "uhid", "plain", default is "adbkeyboard"
-ime_preference: "gboard"
+# ime preference, can be "adbkeyboard", "gboard", "uhid", "plain", "hide", default is "adbkeyboard"
+ime_preference: "adbkeyboard"
 
 # retrieve and display app icon instead of the default scrcpy icon
 retrieve_app_icon: true
@@ -1889,7 +1889,41 @@ class AdbWrapper:
         self.remote_swm_dir = self.config.android_session_storage_path
         self.initialize()
         self.remote = self
-
+    def disable_selinux(self):
+        self.execute_su_cmd("setenforce 0")
+    def enable_selinux(self):
+        self.execute_su_cmd("setenforce 1")
+    def list_recent_apps(self):
+        # dumpsys activity recents  |grep 'Recent #' | grep type=standard
+        output=self.check_output(["dumpsys","activity" ,"recents"])
+        lines = grep_lines(output, ["Recent #"])
+        lines = grep_lines("\n".join(lines), ["type=standard"])
+        # parse app id from lines
+        #   * Recent #0: Task{611ba52 #4446 type=standard A=10244:com.tencent.mobileqq U=0 visible=true visibleRequested=true mode=fullscreen translucent=false sz=1}
+        ret = []
+        for it in lines:
+            kv_list = it.split(" ")
+            ret_it = dict()
+            for kv in kv_list:
+                if kv.startswith("A="):
+                    app_id = kv.split(":")[-1].split("/")[0]
+                    ret_it["app_id"] = app_id
+                elif kv.startswith("visible="):
+                    visible = None
+                    if kv.endswith("=true"):
+                        visible=True
+                    elif kv.endswith("=false"):
+                        visible=False
+                    if visible is not None:
+                        ret_it['visible'] = visible
+            ret.append(ret_it)
+        return ret
+    def enable_selinux_delayed(self, delay):
+        import time
+        def enable_selinux_runner():
+            time.sleep(delay)
+            self.enable_selinux()
+        start_daemon_thread(target=enable_selinux_runner)
     def check_device_online(self, device_id: str):
         active_device_ids = self.list_device_ids()
         ret = device_id in active_device_ids
@@ -2199,14 +2233,38 @@ class AdbWrapper:
 
     def set_keyboard_su(self, keyboard_activity_name: str):
         self.execute_su_cmd("ime set %s" % keyboard_activity_name)
+    # TODO: update apk.zip with gboard apks
 
+    def download_gboard_apk(self, gboard_bin_id:str):
+        import requests
+        download_dir = os.path.join(self.config.cache_dir, "apk")
+        os.makedirs(download_dir, exist_ok=True)
+        github_mirror = test_best_github_mirror(self.config.github_mirrors, 5)
+        apk_name =  "%s.apk" % gboard_bin_id
+        download_url = "%s" % (github_mirror, apk_name)
+        download_path = os.path.join(download_dir, apk_name)
+        try:
+            with requests.get(download_url, stream=True) as r:
+                r.raise_for_status()
+                with open(download_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+        finally:
+            if os.path.exists(download_path):
+                os.remove(download_path)
     def install_gboard(self):
-        print("Warning: Gboard installation is not implemented yet.")
         device_arch = self.get_device_architecture()
+  
         gboard_app_id = "com.google.android.inputmethod.latin"
         gboard_installed = self.check_app_existance(gboard_app_id)
         if not gboard_installed:
-            raise ValueError("Gboard is not installed.")
+            gboard_bin_id = "gboard-%s" % device_arch
+            try:
+                apk_path = self.get_swm_apk_path(gboard_bin_id)
+            except FileNotFoundError:
+                self.download_gboard_apk(gboard_bin_id)
+                apk_path = self.get_swm_apk_path(gboard_bin_id)
+            self.install_apk(apk_path)
 
     def enable_and_set_gboard(self):
         gboard_activity_name = "com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME"
@@ -2667,6 +2725,8 @@ class ScrcpyWrapper:
             cmd.extend(["--keyboard=uhid"])
         elif ime_preference == "plain":
             ...
+        elif ime_preference == 'hide':
+            cmd.extend(["--display-ime-policy=hide"])
         else:
             raise ValueError("Unknown IME preference: %s" % ime_preference)
         # TODO: change scrcpy PC IME input prompt starting location based on android device cursor location, first get the cursor location (how did gboard know that?)
@@ -2736,6 +2796,8 @@ class ScrcpyWrapper:
                 time.sleep(interval)
                 if hasattr(proc, "terminate_reason"):
                     break
+                if hasattr(proc, "device_disconnected"):
+                    break
                 active_apps = self.adb_wrapper.get_active_apps()
                 # print("Active apps:", active_apps)
                 focused_app_ids = active_apps["focused"]  # currently only one
@@ -2748,6 +2810,8 @@ class ScrcpyWrapper:
                     app_in_display = getattr(proc, "app_in_display", False)
                     if not app_in_display:
                         continue
+                    if hasattr(proc, "device_disconnected"):
+                        break
                     if self.ime_preference == "gboard":
                         self.adb_wrapper.enable_and_set_gboard()
                     elif self.ime_preference == "adbkeyboard":
@@ -3562,10 +3626,12 @@ export TERM='xterm-256color'
 export TMPDIR='/data/data/com.termux/files/usr/tmp'
 export LANG='en_US.UTF-8'
 export SHELL='/data/data/com.termux/files/usr/bin/bash'
+SELINUX_CONTEXT=$(stat -c '%C' $SHELL)
 cd "$HOME"
-exec "$SHELL" -li $@
+# exec "$SHELL" -li $@
+runcon "$SELINUX_CONTEXT" "$SHELL" -li $@
 """
-        self.sha256_init_script = sha256sum(self.content_init_script)
+        self.sha256_init_script = sha256sum(self.content_init_scrip
         self.termux_bash_path = "/data/data/com.termux/files/usr/bin/bash"
         self.path_init_script = self.swm.adb_wrapper.remote_swm_dir + "/termux_init.sh"
 
@@ -3654,6 +3720,9 @@ exec "$SHELL" -li $@
                 additional_args = "-c '%s'" % " ".join(shell_args)
         else:
             additional_args = ""
+        # disable selinux
+        self.swm.adb_wrapper.disable_selinux()
+        self.swm.adb_wrapper.enable_selinux_delayed(2)
         self.swm.adb_wrapper.execute_shell(
             [
                 "-t",  # by DeepSeek
