@@ -776,6 +776,7 @@ class ADBStorage(Storage):
         adb_wrapper.create_file_if_not_exists(self.filename)
         self.enable_read_cache = enable_read_cache
         self.read_cache = None
+        self.write_cache = None
 
     def read(self):
         import json
@@ -798,11 +799,16 @@ class ADBStorage(Storage):
         import json
 
         content = json.dumps(data)
-        self.adb_wrapper.write_file(self.filename, content)
+        self.write_cache = content
         if self.enable_read_cache:
             self.read_cache = content
+    
+    def flush(self):
+        if self.write_cache:
+            self.adb_wrapper.write_file(self.filename, self.write_cache)
 
     def close(self):
+        self.flush()
         pass
 
 
@@ -815,6 +821,9 @@ class SWMOnDeviceDatabase:
         assert type(adb_wrapper.device) == str
         self.device_id = adb_wrapper.device
         self._db = TinyDB(db_path, storage=self.storage)
+    
+    def flush(self):
+        self._db.storage.flush() # type: ignore
 
     def write_previous_ime(self, previous_ime: str):
         PreviousIme = Query()
@@ -823,6 +832,7 @@ class SWMOnDeviceDatabase:
             dict(device_id=device_id, previous_ime=previous_ime),
             (PreviousIme.device_id == device_id),
         )
+        self.flush()
 
     def read_previous_ime(self):
         PreviousIme = Query()
@@ -858,6 +868,7 @@ class SWMOnDeviceDatabase:
     def update_app_last_used_time(self, device_id: str, app_id: str):
         last_used_time = datetime.now()
         self.write_app_last_used_time(device_id, app_id, last_used_time)
+        self.flush()
 
     def get_app_last_used_time(self, device_id, app_id: str) -> Optional[datetime]:
         AppUsage = Query()
@@ -1145,7 +1156,10 @@ class AppManager:
         print_formatted: bool = False,
         update_cache=False,
         drop_fields: dict[str, bool] = {},
+        update_last_used=False,
     ):
+        if update_last_used:
+            self.update_all_app_last_used_time()
         if most_used:
             apps = self.list_most_used_apps(most_used, update_cache=update_cache)
         else:
@@ -1425,6 +1439,20 @@ retrieve_app_icon: true
         app_config_path = self.get_app_config_path(app_name)
         with open(app_config_path, "w") as f:
             yaml.safe_dump(config, f)
+    
+    def flush_device_db(self):
+        self.swm.on_device_db.flush()
+            
+    def update_all_app_last_used_time(self):
+        if not hasattr(self, "all_app_last_used_time_updated"):
+            all_app_usage_stats = self.swm.adb_wrapper.list_app_last_visible_time()
+            for it in all_app_usage_stats:
+                # TODO: bulk update, improve tinydb i/o speed, separate read from commit
+                app_id = it["app_id"]
+                last_visible_time = it['lastTimeVisible']
+                self.write_app_last_used_time_to_db(app_id, last_visible_time)
+            self.flush_device_db()
+            setattr(self, "all_app_last_used_time_updated", True)
 
     def list_all_apps(self, update_cache=False) -> List[dict[str, str]]:
         # package_ids = self.swm.adb_wrapper.list_packages()
@@ -1436,6 +1464,10 @@ retrieve_app_icon: true
             package_list = self.swm.scrcpy_wrapper.list_package_id_and_alias()
             self.swm.scrcpy_wrapper.save_package_id_and_alias_cache(package_list)
         assert type(package_list) == list
+
+        if update_cache:
+            self.update_all_app_last_used_time()
+
 
         for it in package_list:
             package_id = it["id"]
@@ -1456,6 +1488,7 @@ retrieve_app_icon: true
             if last_used_time is None:
                 last_used_time = datetime.fromtimestamp(0)
             it["last_used_time"] = last_used_time
+        self.flush_device_db()
         return package_list
 
     def list_most_used_apps(
@@ -1914,6 +1947,54 @@ class AdbWrapper:
         self.remote_swm_dir = self.config.android_session_storage_path
         self.initialize()
         self.remote = self
+    
+    def list_app_last_visible_time(self):
+        import datetime
+        java_code = """
+import android.content.Context;
+import java.util.Calendar;
+import android.os.Build;
+
+import android.app.usage.UsageStatsManager;
+import android.app.usage.UsageStats;
+
+UsageStatsManager usageStatsManager = (UsageStatsManager) 
+    systemContext.getSystemService(Context.USAGE_STATS_SERVICE);
+
+Calendar calendar = Calendar.getInstance();
+long endTime = calendar.getTimeInMillis();
+calendar.add(Calendar.YEAR, -100);
+long startTime = calendar.getTimeInMillis();
+
+// Query usage stats
+stats = usageStatsManager.queryAndAggregateUsageStats(startTime, endTime);
+
+// Process results
+for (UsageStats usageStats : stats.values()) {
+    String packageName = usageStats.getPackageName();
+    long lastTimeVisible;
+    // Use getLastTimeVisible() if available (API 29+), else fallback to getLastTimeUsed()
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        lastTimeVisible = usageStats.getLastTimeVisible();
+    } else {
+        lastTimeVisible = usageStats.getLastTimeUsed();
+    }
+    System.out.println("package="+packageName+" lastTimeVisible="+lastTimeVisible.toString());
+}
+"""
+        output = self.execute_java_code(java_code, capture_output=True)
+        assert output
+        # now process lines
+        lines = split_lines(output)
+        ret = []
+        for it in lines:
+            if it.startswith("package="):
+                app_id, lastTimeVisible = it.split(" ")
+                app_id, lastTimeVisible = app_id.split("=")[-1], lastTimeVisible.split("=")[-1]
+                lastTimeVisible = int(lastTimeVisible)
+                lastTimeVisible = datetime.datetime.fromtimestamp(lastTimeVisible/1000)
+                ret.append(dict(app_id=app_id, lastTimeVisible = lastTimeVisible))
+        return ret
 
     def disable_selinux(self):
         self.execute_su_cmd("setenforce 0")
@@ -2342,7 +2423,7 @@ class AdbWrapper:
     def uninstall_app(self, app_id: str):
         self.execute(["uninstall", app_id])
 
-    def execute_java_code(self, java_code):
+    def execute_java_code(self, java_code, sudo=False, capture_output=False):
         # TODO: Capture execution output, inplant success challenge such as simple arithmatics
         # TODO: Write a java repl accessibke via swm cli
         # TODO: Run termux shell via swm cli, check if termux is installed first
@@ -2365,7 +2446,15 @@ class AdbWrapper:
         self.write_file(bsh_tmp_path, java_code)
         self.write_file(sh_tmp_path, java_code_runner)
         # execute
-        self.execute_shell(["sh", sh_tmp_path])
+        if sudo:
+            cmd = ["su", "-c", "sh '%s'" % sh_tmp_path]
+        else:
+            cmd = ["sh", sh_tmp_path]
+        if capture_output:
+            ret = self.check_output_shell(cmd)
+            return ret
+        else:
+            self.execute_shell(cmd)
 
     def get_app_apk_path(self, app_id: str):
         ret = None
@@ -3614,21 +3703,25 @@ class JavaManager:
         self.beeshell_app_id = "me.zhanghai.android.beeshell"
         self.beeshell_invoke_command = "pm_path=`pm path me.zhanghai.android.beeshell` && apk_path=${pm_path#package:} && `dirname $apk_path`/lib/*/libbsh.so"
 
-    def run(self, script_path: str):
+    def run(self, script_path: str, sudo=False):
         content = get_file_content(script_path)
-        self.run_script(content)
+        self.run_script(content, sudo=sudo)
 
-    def run_script(self, content: str):
-        self.swm.adb_wrapper.execute_java_code(content)
+    def run_script(self, content: str, sudo=False):
+        self.swm.adb_wrapper.execute_java_code(content, sudo=sudo)
 
-    def shell(self, shell_args: list[str] = []):
+    def shell(self, shell_args: list[str] = [], sudo=False):
         if shell_args:
             script_content = " ".join(shell_args)
-            self.run_script(script_content)
+            self.run_script(script_content, sudo=sudo)
         else:
             print("No script provided, start REPL")
             self.swm.adb_wrapper.install_beeshell()
-            self.swm.adb_wrapper.execute_shell(["-t", self.beeshell_invoke_command])
+            if sudo:
+                cmd = ["-t", "su", "-c", self.beeshell_invoke_command]
+            else:
+                cmd = ["-t", self.beeshell_invoke_command]
+            self.swm.adb_wrapper.execute_shell(cmd)
 
 
 # TODO: further restrict user privilege and emulate run_as behavior via chroot, proot or other methods, if Termux is not debug build
@@ -4085,7 +4178,7 @@ def main():
                 if limit is None:
                     limit = 10
                 limit = int(limit)
-                swm.app_manager.list(most_used=limit, print_formatted=True)
+                swm.app_manager.list(most_used=limit, print_formatted=True, update_last_used=True)
             elif args["run"]:
                 no_new_display = args["no-new-display"]
                 query = args["<query>"]
