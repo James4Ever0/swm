@@ -64,6 +64,8 @@ Environment variables:
   FZF           Path to FZF binary (overrides SWM managed FZF)
 """
 
+# TODO: use filelock to handle app recovery clashing at device reconnection, release the lock when app is launched for sure
+
 # TODO: check gboard version, include gboard apk in our binary release, install gboard as our official companion input method app in uhid mode
 
 # TODO: blacklist commands, change execution preferences, configs, commandline help based on healthcheck result per device
@@ -1126,10 +1128,6 @@ class AppManager:
 
         return apps
 
-    def install_and_use_adb_keyboard(self):  # require root
-        # TODO: check root avalibility, decorate this method, if no root is found then raise exception
-        self.swm.adb_wrapper.install_adb_keyboard()
-        self.swm.adb_wrapper.enable_and_set_adb_keyboard()
 
     def retrieve_app_icon(self, package_id: str, icon_path: str):
         self.swm.adb_wrapper.retrieve_app_icon(package_id, icon_path)
@@ -1193,9 +1191,9 @@ class AppManager:
             app_config = self.get_app_config(init_config)
         else:
             app_config = self.get_or_create_app_config(app_id)
-        use_adb_keyboard = app_config.get("use_adb_keyboard", False)
-        if use_adb_keyboard:
-            self.install_and_use_adb_keyboard()
+        ime_preference = app_config.get("ime_preference", "adbkeyboard")
+        #use_adb_keyboard =app_config.get("use_adb_keyboard", False)
+        self.ime_preference = ime_preference
 
         if app_config.get("retrieve_app_icon", False):
             icon_path = os.path.join(self.swm.local_icon_dir, "%s.png" % app_id)
@@ -1227,7 +1225,8 @@ class AppManager:
             scrcpy_args=scrcpy_args,
             title=title,
             new_display=new_display,
-            use_adb_keyboard=use_adb_keyboard,
+            # use_adb_keyboard=use_adb_keyboard,
+            ime_preference = ime_preference,
             env=env,
         )
 
@@ -1368,6 +1367,8 @@ class AppManager:
                 ret = self.resolve_app_config_reference(ref, sources=[app_name])
         return ret
 
+    # TODO: re-ensure ime preference (activate gboard or adbkeyboard) when the app is focused, to deal with different ime settings per app
+
     @property
     def default_app_config(self):
         return """# Application configuration template
@@ -1381,8 +1382,11 @@ class AppManager:
 # arguments passed to scrcpy
 scrcpy_args: []
 
-# install and enable adb keyboard, useful for using PC input method when multi-tasking
-use_adb_keyboard: true
+# install and enable adb keyboard, useful for using PC input method when multi-tasking (deprecated)
+# use_adb_keyboard: true
+
+# ime preference, can be "adbkeyboard", "gboard", "uhid", "plain", default is "adbkeyboard"
+ime_preference: "gboard"
 
 # retrieve and display app icon instead of the default scrcpy icon
 retrieve_app_icon: true
@@ -2179,8 +2183,9 @@ class AdbWrapper:
         return self.execute_su_cmd(cmd, **kwargs)
 
     def enable_and_set_specific_keyboard(self, keyboard_activity_name: str):
-        self.enable_keyboard_su(keyboard_activity_name)
-        self.set_keyboard_su(keyboard_activity_name)
+        if self.get_current_ime() != keyboard_activity_name:
+            self.enable_keyboard_su(keyboard_activity_name)
+            self.set_keyboard_su(keyboard_activity_name)
 
     def enable_keyboard_su(self, keyboard_activity_name: str):
         self.execute_su_cmd("ime enable %s" % keyboard_activity_name)
@@ -2190,11 +2195,22 @@ class AdbWrapper:
 
     def set_keyboard_su(self, keyboard_activity_name: str):
         self.execute_su_cmd("ime set %s" % keyboard_activity_name)
+    
+    def install_gboard(self):
+        print("Warning: Gboard installation is not implemented yet.")
+        device_arch = self.get_device_architecture()
+        gboard_app_id = "com.google.android.inputmethod.latin"
+        gboard_installed = self.check_app_existance(gboard_app_id)
+        if not gboard_installed:
+            raise ValueError("Gboard is not installed.")
+    
+    def enable_and_set_gboard(self):
+        gboard_activity_name = "com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME"
+        self.enable_and_set_specific_keyboard(gboard_activity_name)
 
     def enable_and_set_adb_keyboard(self):
         keyboard_activity_name = "com.android.adbkeyboard/.AdbIME"
-        if self.get_current_ime() != keyboard_activity_name:
-            self.enable_and_set_specific_keyboard(keyboard_activity_name)
+        self.enable_and_set_specific_keyboard(keyboard_activity_name)
 
     def disable_adb_keyboard(self):
         self.execute(["shell", "am", "force-stop", "com.android.adbkeyboard"])
@@ -2531,12 +2547,13 @@ out.close();
 
 
 class ScrcpyWrapper:
-    def __init__(self, scrcpy_path: str, swm: "SWM"):
+    def __init__(self, scrcpy_path: str, swm: "SWM",  ):
         self.scrcpy_path = scrcpy_path
         self.config = swm.config
         self.device = swm.config.get("device")
         self.adb_wrapper = swm.adb_wrapper
         self.swm = swm
+        self.ime_preference=None
 
     @property
     def app_list_cache_path(self):
@@ -2622,17 +2639,28 @@ class ScrcpyWrapper:
         # TODO: display fps when loglevel is verbose
         # cmd.extend(['--print-fps'])
         # <scrcpy stdout> INFO: 61 fps
+        ime_preference = self.ime_preference
         # may fail and require su
-        # cmd.extend(['--keyboard=uhid'])
-        cmd.extend(
-            ["--prefer-text"]
-        )  # this flag shall be enabled when using the adbkeyboard to input text from PC IME, to make sure ASCII chars injected
+        # cmd.extend(["--mouse-bind=++++"])  # prevent accident exit, --forward-all-clicks
         cmd.extend(["--stay-awake"])
         cmd.extend(["--disable-screensaver"])
-        # so that you can use gboard
         cmd.extend(
             ["--display-ime-policy=local"]
         )  # preferred for Gboard, if only the gray bar of adbkeyboard can be hidden (a custom build, or any alternative maybe?)
+        print("IME preference:", ime_preference)
+        if ime_preference == "adbkeyboard":
+            cmd.extend(
+                ["--prefer-text"]
+            )  # this flag shall be enabled when using the adbkeyboard to input text from PC IME, to make sure ASCII chars injected (cannot use with --keyboard=uhid)
+            # https://github.com/npes87184/SocketIME
+        elif ime_preference in ["gboard", "uhid"]:
+            # Note: Shift + Space for switching IME (sometimes not working)
+            # so that you can use gboard, the "hardware" keyboard, the floating keyboard
+            cmd.extend(["--keyboard=uhid"])
+        elif ime_preference == "plain":
+            ...
+        else:
+            raise ValueError("Unknown IME preference: %s" %ime_preference)
         # TODO: change scrcpy PC IME input prompt starting location based on android device cursor location, first get the cursor location (how did gboard know that?)
         # cmd.extend(["--display-ime-policy=hide"]) # not working with any keyboard
         # for capturing paste events
@@ -2656,6 +2684,33 @@ class ScrcpyWrapper:
         cmd = self._build_cmd(args)
         output = subprocess.check_output(cmd).decode("utf-8")
         return output
+
+    def start_sidecar_ime_activator(self, proc:subprocess.Popen, interval = 0.5):
+        import time
+        app_id = getattr(proc, "app_id")
+        # proc_pid = proc.pid
+        def ime_activator():
+            if self.ime_preference not in ['gboard', "adbkeyboard"]: return
+            while True:
+                time.sleep(interval)
+                if hasattr(proc, "terminate_reason"): break
+                active_apps = self.adb_wrapper.get_active_apps()
+                # print("Active apps:", active_apps)
+                focused_app_ids = active_apps['focused'] # currently only one
+                app_focused = app_id in focused_app_ids
+                setattr(proc, "app_focused", app_focused)
+                # print("App focused:", app_focused)
+                # print("IME preference:", self.ime_preference)
+                if app_focused:
+                    # check app in display
+                    app_in_display = getattr(proc, "app_in_display", False)
+                    if not app_in_display: continue
+                    if self.ime_preference == "gboard":
+                        self.adb_wrapper.enable_and_set_gboard()
+                    elif self.ime_preference == "adbkeyboard":
+                        self.adb_wrapper.enable_and_set_adb_keyboard()
+                        
+        start_daemon_thread(target=ime_activator)
 
     def start_sidecar_scrcpy_monitor_control_port(self, proc: subprocess.Popen):
         import time
@@ -2689,6 +2744,15 @@ class ScrcpyWrapper:
                 print("Device %s is online" % self.device)
                 break
 
+    def install_and_use_adb_keyboard(self):  # require root
+        # TODO: check root avalibility, decorate this method, if no root is found then raise exception
+        self.swm.adb_wrapper.install_adb_keyboard()
+        self.swm.adb_wrapper.enable_and_set_adb_keyboard()
+
+    def install_and_use_gboard(self):
+        self.swm.adb_wrapper.install_gboard()
+        self.swm.adb_wrapper.enable_and_set_gboard()
+
     def launch_app(
         self,
         package_name: str,
@@ -2698,7 +2762,8 @@ class ScrcpyWrapper:
         new_display=True,
         title: Optional[str] = None,
         no_audio=True,
-        use_adb_keyboard=False,
+        ime_preference:Optional[str] = None,
+        # use_adb_keyboard=False,
         env={},
     ):
         import signal
@@ -2709,6 +2774,17 @@ class ScrcpyWrapper:
         # import time
 
         args = []
+
+        self.ime_preference =ime_preference
+
+        print("IME preference before launching app:", ime_preference)
+
+
+        if ime_preference == "adbkeyboard":
+        # if use_adb_keyboard:
+            self.install_and_use_adb_keyboard()
+        elif ime_preference == "gboard":
+            self.install_and_use_gboard()
 
         configured_window_options = []
 
@@ -2756,6 +2832,7 @@ class ScrcpyWrapper:
             universal_newlines=True,
             env=_env,
         )
+        setattr(proc, "app_id", package_name)
         proc_pid = proc.pid
 
         print("Scrcpy PID:", proc_pid)
@@ -2791,8 +2868,12 @@ class ScrcpyWrapper:
             new_display=new_display,
             title=title,
             no_audio=no_audio,
-            use_adb_keyboard=use_adb_keyboard,
+            # use_adb_keyboard=use_adb_keyboard,
+            ime_preference = ime_preference,
         )
+
+        self.start_sidecar_ime_activator(proc=proc)
+
         swm_scrcpy_proc_pid_path = self.generate_swm_scrcpy_proc_pid_path()
         try:
             # write the pid to the path
@@ -2803,9 +2884,10 @@ class ScrcpyWrapper:
                 content_data = json.dumps(data, indent=4, ensure_ascii=False)
                 f.write(content_data)
                 # TODO: write additional launch parameters here so we can create a session based on these files
-            self.start_sidecar_unicode_input(
-                proc=proc, use_adb_keyboard=use_adb_keyboard
-            )
+            if ime_preference == "adbkeyboard":
+                self.start_sidecar_unicode_input(
+                    proc=proc, 
+                )
             for line in proc.stderr:
                 captured_line = line.strip()
                 if self.config.verbose:
@@ -2915,7 +2997,7 @@ class ScrcpyWrapper:
     def start_sidecar_unicode_input(
         self,
         proc: subprocess.Popen,
-        use_adb_keyboard: bool,
+        # use_adb_keyboard: bool,
         poll_interval=0.1,
         pid_check_interval=1,
     ):
@@ -2939,11 +3021,11 @@ class ScrcpyWrapper:
                     continue
                 else:
                     setattr(proc, "pending_unicode_input", "")
-                if use_adb_keyboard:
-                    # TODO: check if the adb keyboard is "really" activated (with the grey bar underneath the screen) programatically before broadcasting the intent
-                    self.adb_wrapper.adb_keyboard_input_text(pending_unicode_input)
-                else:
-                    self.clipboard_paste_input_text(pending_unicode_input)
+                # if use_adb_keyboard:
+                # TODO: check if the adb keyboard is "really" activated (with the grey bar underneath the screen) programatically before broadcasting the intent
+                self.adb_wrapper.adb_keyboard_input_text(pending_unicode_input)
+                # else:
+                #     self.clipboard_paste_input_text(pending_unicode_input)
 
         start_daemon_thread(unicode_input)
 
@@ -3004,6 +3086,7 @@ class ScrcpyWrapper:
             time.sleep(1)
             try:
                 app_in_display = self.check_app_in_display(app_id, display_id)
+                setattr(proc, "app_in_display", app_in_display)
             except DeviceOfflineError as e:
                 print(e.args[0])
                 break
@@ -3341,7 +3424,7 @@ class JavaManager:
 
 # getprop ro.debuggable # 0
 # resetprop ro.debuggable 1 # ksu/magisk
-# stop 
+# stop
 # start
 # (phone will soft-restart so we would not use this method, also ineffective for run-as com.termux, still "not debuggable")
 
@@ -3370,10 +3453,11 @@ class JavaManager:
 # context=u:r:untrusted_app_27:s0:c24,c257,c512,c768
 
 # ls -Z /data/data/com.termux/files/usr/var/run/tmux-10280/default difference:
-# u:object_r:app_data_file:s0 
+# u:object_r:app_data_file:s0
 # u:object_r:app_data_file:s0:c24,c257,c512,c768
 
 # you can just run setenforce 0 to bypass selinux restrictions and may help with tmux permission issues, but dangerous
+
 
 # TODO: warn the user that tmux may not work properly (permission denied from android termux app if the server is created using swm termux shell)
 class TermuxManager:
@@ -3521,7 +3605,7 @@ def create_default_config(cache_dir: str):
                     "version": "2.1.1"
                 },  # TODO: replace bsh gui with bsh cli (core) on github release, "java-jar.zip"
                 "aapt": {"version": "v0.2"},
-                "gboard": {"version":"15.5.8.766552071"},
+                "gboard": {"version": "15.5.8.766552071"},
             },
         }
     )
