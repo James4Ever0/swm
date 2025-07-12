@@ -74,7 +74,7 @@ Environment variables:
 
 # TODO: use java to collect usagestats, infer app last used time, instead of directory access time enumeration (incorrect), or increase enumeration depth? (slow)
 
-# TODO: terminate scrcpy with the same app_id running when running new app
+# TODO: terminate scrcpy with the same app_id running when running new app, or refuse to launch, by configuration "launch_policy"
 
 # TODO: infer the reason of scrcpy closing, like device_disconnect, app_gone, user_requested, new_instance, unknown
 
@@ -892,6 +892,14 @@ class SWM:
         self.ime_manager = ImeManager(self)
         self.java_manager = JavaManager(self)
         self.termux_manager = TermuxManager(self)
+    
+    def healthcheck(self):
+        print("Warning: Healthcheck is not implemented yet.")
+        ...
+    
+    def repl(self):
+        print("Warning: REPL mode is not implemented yet.")
+        ...
 
     @property
     def local_icon_dir(self):
@@ -1889,13 +1897,16 @@ class AdbWrapper:
         self.remote_swm_dir = self.config.android_session_storage_path
         self.initialize()
         self.remote = self
+
     def disable_selinux(self):
         self.execute_su_cmd("setenforce 0")
+
     def enable_selinux(self):
         self.execute_su_cmd("setenforce 1")
+
     def list_recent_apps(self):
         # dumpsys activity recents  |grep 'Recent #' | grep type=standard
-        output=self.check_output(["dumpsys","activity" ,"recents"])
+        output = self.check_output(["dumpsys", "activity", "recents"])
         lines = grep_lines(output, ["Recent #"])
         lines = grep_lines("\n".join(lines), ["type=standard"])
         # parse app id from lines
@@ -1911,19 +1922,23 @@ class AdbWrapper:
                 elif kv.startswith("visible="):
                     visible = None
                     if kv.endswith("=true"):
-                        visible=True
+                        visible = True
                     elif kv.endswith("=false"):
-                        visible=False
+                        visible = False
                     if visible is not None:
-                        ret_it['visible'] = visible
+                        ret_it["visible"] = visible
             ret.append(ret_it)
         return ret
+
     def enable_selinux_delayed(self, delay):
         import time
+
         def enable_selinux_runner():
             time.sleep(delay)
             self.enable_selinux()
+
         start_daemon_thread(target=enable_selinux_runner)
+
     def check_device_online(self, device_id: str):
         active_device_ids = self.list_device_ids()
         ret = device_id in active_device_ids
@@ -2233,14 +2248,16 @@ class AdbWrapper:
 
     def set_keyboard_su(self, keyboard_activity_name: str):
         self.execute_su_cmd("ime set %s" % keyboard_activity_name)
+
     # TODO: update apk.zip with gboard apks
 
-    def download_gboard_apk(self, gboard_bin_id:str):
+    def download_gboard_apk(self, gboard_bin_id: str):
         import requests
+
         download_dir = os.path.join(self.config.cache_dir, "apk")
         os.makedirs(download_dir, exist_ok=True)
         github_mirror = test_best_github_mirror(self.config.github_mirrors, 5)
-        apk_name =  "%s.apk" % gboard_bin_id
+        apk_name = "%s.apk" % gboard_bin_id
         download_url = "%s" % (github_mirror, apk_name)
         download_path = os.path.join(download_dir, apk_name)
         try:
@@ -2252,9 +2269,10 @@ class AdbWrapper:
         finally:
             if os.path.exists(download_path):
                 os.remove(download_path)
+
     def install_gboard(self):
         device_arch = self.get_device_architecture()
-  
+
         gboard_app_id = "com.google.android.inputmethod.latin"
         gboard_installed = self.check_app_existance(gboard_app_id)
         if not gboard_installed:
@@ -2725,7 +2743,7 @@ class ScrcpyWrapper:
             cmd.extend(["--keyboard=uhid"])
         elif ime_preference == "plain":
             ...
-        elif ime_preference == 'hide':
+        elif ime_preference == "hide":
             cmd.extend(["--display-ime-policy=hide"])
         else:
             raise ValueError("Unknown IME preference: %s" % ime_preference)
@@ -3111,15 +3129,14 @@ class ScrcpyWrapper:
             )  # if at this point terminate_reason is 'unknown', probably it is killed using GUI or operating system
             setattr(proc, "terminate_success", terminate_success)
 
-            restart_reasons = ["device_offline", "app_gone"] # TODO: make this configurable in swm baseconfig
+            restart_reasons = [
+                "device_offline",
+                "app_gone",
+            ]  # TODO: make this configurable in swm baseconfig
 
-            need_restart = not has_exception and (
-                terminate_reason in restart_reasons
-            )
+            need_restart = not has_exception and (terminate_reason in restart_reasons)
 
-            setattr(
-                proc, "need_restart", need_restart
-            )
+            setattr(proc, "need_restart", need_restart)
 
             if need_restart:
                 if terminate_reason == "app_gone":
@@ -3127,9 +3144,11 @@ class ScrcpyWrapper:
 
                 if terminate_reason == "device_offline":
                     print("Device is offline, waiting for device to reconnect")
-                    device_online = False # assume to be False here
+                    device_online = False  # assume to be False here
                 else:
-                    device_online = self.is_device_connected() # only god know if the device is still online here
+                    device_online = (
+                        self.is_device_connected()
+                    )  # only god know if the device is still online here
                 if not device_online:
                     self.wait_for_device_reconnect()
                 restart_params = launch_params.copy()
@@ -3620,20 +3639,26 @@ class TermuxManager:
 export PREFIX='/data/data/com.termux/files/usr'
 export HOME='/data/data/com.termux/files/home'
 export LD_LIBRARY_PATH='/data/data/com.termux/files/usr/lib'
-export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/bin/applets:$PATH"
+export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/bin/applets"
+# export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/bin/applets:$PATH"
 export LD_PRELOAD='/data/data/com.termux/files/usr/lib/libtermux-exec-ld-preload.so'
 export TERM='xterm-256color'
 export TMPDIR='/data/data/com.termux/files/usr/tmp'
 export LANG='en_US.UTF-8'
 export SHELL='/data/data/com.termux/files/usr/bin/bash'
-SELINUX_CONTEXT=$(stat -c '%C' $SHELL)
+#SELINUX_CONTEXT=$(stat -c '%C' $SHELL)
 cd "$HOME"
-# exec "$SHELL" -li $@
-runcon "$SELINUX_CONTEXT" "$SHELL" -li $@
+exec "$SHELL" -li $@
+#runcon "$SELINUX_CONTEXT" "$SHELL" -li $@
 """
-        self.sha256_init_script = sha256sum(self.content_init_scrip
+        self.sha256_init_script = sha256sum(self.content_init_script)
         self.termux_bash_path = "/data/data/com.termux/files/usr/bin/bash"
         self.path_init_script = self.swm.adb_wrapper.remote_swm_dir + "/termux_init.sh"
+
+    def get_selinux_context(self):
+        cmd = "stat -c '%C' '/data/data/com.termux/files/usr/bin/bash'"
+        output = self.swm.adb_wrapper.check_output_su(cmd).strip()
+        return output
 
     def check_termux_installed(self):
         ret = self.swm.adb_wrapper.test_path_existance_su(self.termux_bash_path)
@@ -3700,7 +3725,9 @@ runcon "$SELINUX_CONTEXT" "$SHELL" -li $@
         assert user
         return user
 
-    def shell(self, shell_args: list[str] = [], no_prefix: bool = False):
+    def shell(
+        self, shell_args: list[str] = [], no_prefix: bool = False, disable_selinux=False
+    ):
         termux_installed = self.check_termux_installed()
         if not termux_installed:
             print("Termux not installed. Installing now...")
@@ -3720,19 +3747,36 @@ runcon "$SELINUX_CONTEXT" "$SHELL" -li $@
                 additional_args = "-c '%s'" % " ".join(shell_args)
         else:
             additional_args = ""
-        # disable selinux
-        self.swm.adb_wrapper.disable_selinux()
-        self.swm.adb_wrapper.enable_selinux_delayed(2)
-        self.swm.adb_wrapper.execute_shell(
-            [
+        if disable_selinux:
+            selinux_context = self.get_selinux_context()
+            cmd = [
+                "-t",  # by DeepSeek
+                "su",
+                "-c",
+                "runcon %s su - %s -c 'sh %s %s'"
+                % (
+                    selinux_context,
+                    user,
+                    termux_data_init_script,
+                    additional_args,
+                ),  # ineffective after setenforce 1, since tmux socket is still not accessable afterwards despite all attributes are the same for the socket file
+                # but works for normal file
+            ]
+            # disable selinux
+            self.swm.adb_wrapper.disable_selinux()
+        else:
+            self.swm.adb_wrapper.enable_selinux() # ok if just install app using apt, but we cannot remove it
+            cmd = [
                 "-t",  # by DeepSeek
                 "su",
                 "-",
-                user,
-                "-c",
+                user, "-c",
                 "sh %s %s" % (termux_data_init_script, additional_args),
             ]
-        )
+        # cannot live with setenforce 1, or this process would die
+        # could we just enable selinux back on once detached?
+        # self.swm.adb_wrapper.enable_selinux_delayed(2)
+        self.swm.adb_wrapper.execute_shell(cmd)
 
 
 def create_default_config(cache_dir: str):
@@ -3752,6 +3796,7 @@ def create_default_config(cache_dir: str):
                 "https://bgithub.xyz",
                 "https://kgithub.com",
             ],
+            "launch_policy": "keep_new", # keep_new, keep_old
             "use_shared_app_config": True,
             "binaries": {
                 "adb": {"version": "1.0.41"},
@@ -3881,12 +3926,6 @@ def main():
         force = args["force"]
         download_initial_binaries(SWM_CACHE_DIR, config.github_mirrors, force=force)
         return
-    elif args["repl"]:
-        print("Warning: REPL mode is not implemented yet.")
-        return
-    elif args["healthcheck"]:
-        print("Warning: Healthcheck is not implemented yet.")
-        return
     init_complete = check_init_complete(SWM_CACHE_DIR)
     if not init_complete:
         print(
@@ -3898,7 +3937,13 @@ def main():
     # # Command routing
     # try:
 
-    if args["adb"]:
+    if args["repl"]:
+        swm.repl()
+        return
+    elif args["healthcheck"]:
+        swm.healthcheck()
+        return
+    elif args["adb"]:
         execute_subprogram(swm.adb, args["<adb_args>"])
 
     elif args["scrcpy"]:
