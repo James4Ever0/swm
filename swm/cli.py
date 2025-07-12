@@ -159,6 +159,9 @@ from tinydb.table import Document
 
 __version__ = "0.1.0"
 
+# TODO: refactor all code in scrcpywrapper and adbwrapper that does not require device_id with NO_DEVICE_ID
+NO_DEVICE_ID = "NO_DEVICE_ID"
+
 
 def sha256sum(text: str):
     import hashlib
@@ -1128,7 +1131,6 @@ class AppManager:
 
         return apps
 
-
     def retrieve_app_icon(self, package_id: str, icon_path: str):
         self.swm.adb_wrapper.retrieve_app_icon(package_id, icon_path)
 
@@ -1192,7 +1194,7 @@ class AppManager:
         else:
             app_config = self.get_or_create_app_config(app_id)
         ime_preference = app_config.get("ime_preference", "adbkeyboard")
-        #use_adb_keyboard =app_config.get("use_adb_keyboard", False)
+        # use_adb_keyboard =app_config.get("use_adb_keyboard", False)
         self.ime_preference = ime_preference
 
         if app_config.get("retrieve_app_icon", False):
@@ -1226,7 +1228,7 @@ class AppManager:
             title=title,
             new_display=new_display,
             # use_adb_keyboard=use_adb_keyboard,
-            ime_preference = ime_preference,
+            ime_preference=ime_preference,
             env=env,
         )
 
@@ -2103,9 +2105,11 @@ class AdbWrapper:
 
     def _build_cmd(self, args: List[str], device_id=None) -> List[str]:
         cmd = [self.adb_path]
-        if device_id:
+        if device_id == NO_DEVICE_ID:
+            ...
+        elif device_id:
             cmd.extend(["-s", device_id])
-        elif self.device:
+        elif self.device:  # this is problematic
             cmd.extend(["-s", self.device])
         cmd.extend(args)
         return cmd
@@ -2195,7 +2199,7 @@ class AdbWrapper:
 
     def set_keyboard_su(self, keyboard_activity_name: str):
         self.execute_su_cmd("ime set %s" % keyboard_activity_name)
-    
+
     def install_gboard(self):
         print("Warning: Gboard installation is not implemented yet.")
         device_arch = self.get_device_architecture()
@@ -2203,7 +2207,7 @@ class AdbWrapper:
         gboard_installed = self.check_app_existance(gboard_app_id)
         if not gboard_installed:
             raise ValueError("Gboard is not installed.")
-    
+
     def enable_and_set_gboard(self):
         gboard_activity_name = "com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME"
         self.enable_and_set_specific_keyboard(gboard_activity_name)
@@ -2474,13 +2478,13 @@ out.close();
     def get_device_architecture(self) -> str:
         return self.check_output(["shell", "getprop", "ro.product.cpu.abi"])
 
-    def list_device_ids(
+    def list_device_ids(  # use adbutils instead.
         self,
         status_blacklist: list[str] = ["unauthorized", "fastboot"],
         with_status: bool = False,
     ) -> List:
         # TODO: detect and filter unauthorized and abnormal devices
-        output = self.check_output(["devices"])
+        output = self.check_output(["devices"], device_id=NO_DEVICE_ID)
         devices = []
         for line in output.splitlines()[1:]:
             if line.strip() and "device" in line:
@@ -2547,13 +2551,17 @@ out.close();
 
 
 class ScrcpyWrapper:
-    def __init__(self, scrcpy_path: str, swm: "SWM",  ):
+    def __init__(
+        self,
+        scrcpy_path: str,
+        swm: "SWM",
+    ):
         self.scrcpy_path = scrcpy_path
         self.config = swm.config
         self.device = swm.config.get("device")
         self.adb_wrapper = swm.adb_wrapper
         self.swm = swm
-        self.ime_preference=None
+        self.ime_preference = None
 
     @property
     def app_list_cache_path(self):
@@ -2633,7 +2641,7 @@ class ScrcpyWrapper:
     def set_device(self, device_id: str):
         self.device = device_id
 
-    def _build_cmd(self, args: List[str]) -> List[str]:
+    def _build_cmd(self, args: List[str], device_id=None) -> List[str]:
         # TODO: make these configs into a config file, such as "scrcpy_base_args"
         cmd = [self.scrcpy_path]
         # TODO: display fps when loglevel is verbose
@@ -2660,14 +2668,18 @@ class ScrcpyWrapper:
         elif ime_preference == "plain":
             ...
         else:
-            raise ValueError("Unknown IME preference: %s" %ime_preference)
+            raise ValueError("Unknown IME preference: %s" % ime_preference)
         # TODO: change scrcpy PC IME input prompt starting location based on android device cursor location, first get the cursor location (how did gboard know that?)
         # cmd.extend(["--display-ime-policy=hide"]) # not working with any keyboard
         # for capturing paste events
         # cmd.extend(["--verbosity=verbose"])
         # <scrcpy stdout> VERBOSE: input: key up   code=67 repeat=0 meta=000000
         # <scrcpy stdout> VERBOSE: input: clipboard 0 nopaste "<content>"
-        if self.device:
+        if device_id == NO_DEVICE_ID:
+            ...
+        elif device_id:
+            cmd.extend(["-s", device_id])
+        elif self.device:
             cmd.extend(["-s", self.device])
         cmd.extend(args)
         return cmd
@@ -2685,18 +2697,48 @@ class ScrcpyWrapper:
         output = subprocess.check_output(cmd).decode("utf-8")
         return output
 
-    def start_sidecar_ime_activator(self, proc:subprocess.Popen, interval = 0.5):
+    def start_sidecar_app_launch_filelock_releaser(
+        self, proc: subprocess.Popen, lock, interval=0.5
+    ):
         import time
-        app_id = getattr(proc, "app_id")
-        # proc_pid = proc.pid
-        def ime_activator():
-            if self.ime_preference not in ['gboard', "adbkeyboard"]: return
+
+        print("Starting sidecar app launch filelock releaser")
+
+        def filelock_releaser():
             while True:
                 time.sleep(interval)
-                if hasattr(proc, "terminate_reason"): break
+                # print("Looping")
+                if hasattr(proc, "terminate_reason"):
+                    break
+                if getattr(proc, "app_in_display", False):
+                    break
+            try:
+                lock.release()
+            except:
+                pass
+            try:
+                os.remove(lock.lock_file)
+            except:
+                pass
+
+        start_daemon_thread(target=filelock_releaser)
+
+    def start_sidecar_ime_activator(self, proc: subprocess.Popen, interval=0.5):
+        import time
+
+        app_id = getattr(proc, "app_id")
+
+        # proc_pid = proc.pid
+        def ime_activator():
+            if self.ime_preference not in ["gboard", "adbkeyboard"]:
+                return
+            while True:
+                time.sleep(interval)
+                if hasattr(proc, "terminate_reason"):
+                    break
                 active_apps = self.adb_wrapper.get_active_apps()
                 # print("Active apps:", active_apps)
-                focused_app_ids = active_apps['focused'] # currently only one
+                focused_app_ids = active_apps["focused"]  # currently only one
                 app_focused = app_id in focused_app_ids
                 setattr(proc, "app_focused", app_focused)
                 # print("App focused:", app_focused)
@@ -2704,12 +2746,13 @@ class ScrcpyWrapper:
                 if app_focused:
                     # check app in display
                     app_in_display = getattr(proc, "app_in_display", False)
-                    if not app_in_display: continue
+                    if not app_in_display:
+                        continue
                     if self.ime_preference == "gboard":
                         self.adb_wrapper.enable_and_set_gboard()
                     elif self.ime_preference == "adbkeyboard":
                         self.adb_wrapper.enable_and_set_adb_keyboard()
-                        
+
         start_daemon_thread(target=ime_activator)
 
     def start_sidecar_scrcpy_monitor_control_port(self, proc: subprocess.Popen):
@@ -2735,11 +2778,12 @@ class ScrcpyWrapper:
 
     def wait_for_device_reconnect(self):
         import time
+        import random
 
         print("Waiting for device %s to reconnect" % self.device)
 
         while True:
-            time.sleep(1)
+            time.sleep(0.5 + 0.5 * random.random())
             if self.is_device_connected():
                 print("Device %s is online" % self.device)
                 break
@@ -2753,6 +2797,15 @@ class ScrcpyWrapper:
         self.swm.adb_wrapper.install_gboard()
         self.swm.adb_wrapper.enable_and_set_gboard()
 
+    def acquire_app_launch_lock(self):
+        import filelock
+
+        lock_path = os.path.join(self.swm.config.cache_dir, "app_launch.lock")
+
+        lock = filelock.FileLock(lock_path)
+        lock.acquire()
+        return lock
+
     def launch_app(
         self,
         package_name: str,
@@ -2762,7 +2815,7 @@ class ScrcpyWrapper:
         new_display=True,
         title: Optional[str] = None,
         no_audio=True,
-        ime_preference:Optional[str] = None,
+        ime_preference: Optional[str] = None,
         # use_adb_keyboard=False,
         env={},
     ):
@@ -2775,13 +2828,12 @@ class ScrcpyWrapper:
 
         args = []
 
-        self.ime_preference =ime_preference
+        self.ime_preference = ime_preference
 
         print("IME preference before launching app:", ime_preference)
 
-
         if ime_preference == "adbkeyboard":
-        # if use_adb_keyboard:
+            # if use_adb_keyboard:
             self.install_and_use_adb_keyboard()
         elif ime_preference == "gboard":
             self.install_and_use_gboard()
@@ -2823,6 +2875,11 @@ class ScrcpyWrapper:
         cmd = self._build_cmd(args)
         _env = os.environ.copy()
         _env.update(env)
+
+        print("Acquiring lock")
+        lock = self.acquire_app_launch_lock()
+        print("Lock acquired")
+
         # merge stderr with stdout
         proc = subprocess.Popen(
             cmd,
@@ -2869,13 +2926,15 @@ class ScrcpyWrapper:
             title=title,
             no_audio=no_audio,
             # use_adb_keyboard=use_adb_keyboard,
-            ime_preference = ime_preference,
+            ime_preference=ime_preference,
         )
 
         self.start_sidecar_ime_activator(proc=proc)
 
         swm_scrcpy_proc_pid_path = self.generate_swm_scrcpy_proc_pid_path()
+        # lock = None
         try:
+            self.start_sidecar_app_launch_filelock_releaser(proc=proc, lock=lock)
             # write the pid to the path
             with open(swm_scrcpy_proc_pid_path, "w") as f:
                 data = dict(
@@ -2886,7 +2945,7 @@ class ScrcpyWrapper:
                 # TODO: write additional launch parameters here so we can create a session based on these files
             if ime_preference == "adbkeyboard":
                 self.start_sidecar_unicode_input(
-                    proc=proc, 
+                    proc=proc,
                 )
             for line in proc.stderr:
                 captured_line = line.strip()
@@ -2895,6 +2954,9 @@ class ScrcpyWrapper:
                 print(
                     "<scrcpy stderr> %s" % captured_line
                 )  # now we check if this indicates some character we need to type in
+                if "WARN: Device disconnected" in captured_line:
+                    setattr(proc, "device_disconnected", True)
+                    break
                 if captured_line.startswith(unicode_char_warning):
                     char_repr = captured_line[len(unicode_char_warning) :].strip()
                     char_str = convert_unicode_escape(char_repr)
@@ -2911,12 +2973,25 @@ class ScrcpyWrapper:
                 # [server] WARN: Could not inject char u+4f60
                 # TODO: use adb keyboard for pasting text from clipboard
         finally:
+            if lock:
+                try:
+                    lock.release()
+                except:
+                    pass
+                try:
+                    os.remove(lock.lock_file)
+                except:
+                    pass
+
             ex_type, ex_value, ex_traceback = sys.exc_info()
 
             # TODO: close the app when the main process is closed
 
             # check if the device is online.
-            device_online = self.is_device_connected()
+            if getattr(proc, "device_disconnected", False):
+                device_online = False
+            else:
+                device_online = self.is_device_connected()
             if not device_online:
                 setattr(proc, "terminate_reason", "device_offline")
             # stderr will emit:
@@ -2972,17 +3047,27 @@ class ScrcpyWrapper:
             )  # if at this point terminate_reason is 'unknown', probably it is killed using GUI or operating system
             setattr(proc, "terminate_success", terminate_success)
 
-            need_wait_for_device_reconnect = not has_exception and (
-                terminate_reason == "device_offline"
+            restart_reasons = ["device_offline", "app_gone"] # TODO: make this configurable in swm baseconfig
+
+            need_restart = not has_exception and (
+                terminate_reason in restart_reasons
             )
 
             setattr(
-                proc, "need_wait_for_device_reconnect", need_wait_for_device_reconnect
+                proc, "need_restart", need_restart
             )
 
-            if need_wait_for_device_reconnect:
-                print("Waiting for device to reconnect")
-                self.wait_for_device_reconnect()
+            if need_restart:
+                if terminate_reason == "app_gone":
+                    print("App gone, restarting app")
+
+                if terminate_reason == "device_offline":
+                    print("Device is offline, waiting for device to reconnect")
+                    device_online = False # assume to be False here
+                else:
+                    device_online = self.is_device_connected() # only god know if the device is still online here
+                if not device_online:
+                    self.wait_for_device_reconnect()
                 restart_params = launch_params.copy()
                 restart_params["env"] = env
                 self.launch_app(**restart_params)
@@ -2991,8 +3076,11 @@ class ScrcpyWrapper:
 
             if no_swm_process_running:
                 if previous_ime:
-                    print("Reverting to previous ime")
-                    self.adb_wrapper.enable_and_set_specific_keyboard(previous_ime)
+                    if self.is_device_connected():
+                        print("Reverting to previous IME")
+                        self.adb_wrapper.enable_and_set_specific_keyboard(previous_ime)
+                    else:
+                        print("Device offline, cannot revert to previous IME")
 
     def start_sidecar_unicode_input(
         self,
@@ -3071,6 +3159,7 @@ class ScrcpyWrapper:
 
         proc_pid = proc.pid
         reconfirming_times = 3
+        reconfirming_interval = 0.2
 
         while True:
             time.sleep(0.2)
@@ -3099,7 +3188,7 @@ class ScrcpyWrapper:
                 # before terminate, analyze the current dump
                 # TODO: restart app in given display, using adb shell
                 for trial in range(reconfirming_times):
-                    time.sleep(1)
+                    time.sleep(reconfirming_interval)
                     print(
                         "App %s seems not in display %s. Reconfirming %s/%s"
                         % (app_id, display_id, trial + 1, reconfirming_times)
