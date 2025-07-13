@@ -123,6 +123,8 @@ Environment variables:
 
 # TODO: implement a cli command to mirror the main display, along with its config just like app config
 
+# TODO: use swm logo as default icon for all swm managed scrcpy windows
+
 # TODO: ask the user to "run anyway" when multiple instances of the same app are running
 
 # TODO: dynamically change the fps of scrcpy, only let the foreground one be full and others be 1 fps
@@ -448,6 +450,7 @@ def encode_base64_str(data: str):
 
 
 # TODO: use logger
+
 # import structlog
 # import loguru
 
@@ -458,13 +461,14 @@ def encode_base64_str(data: str):
 
 # TODO: Create an app config template repo, along with all other devices, pcs, for easy initialization
 
-# TODO: override icon with SCRCPY_ICON_PATH=<app_icon_path>
+# TODO: override extracted app icon with SCRCPY_ICON_PATH=<app_icon_path> or custom icon 
 
 # TODO: not allowing exiting the app in the new display, or close the display if the app is exited, or reopen the app if exited
 
 # TODO: configure app with the same id to use the same app config or separate by device
 
 # TODO: write wiki about enabling com.android.shell for root access in kernelsu/magisk
+
 # TODO: use a special apk for running SWM specific root commands instead of direct invocation of adb root shell
 
 # TODO: monitor the output of scrcpy and capture unicode char input accordingly, for sending unicode char to the adbkeyboard
@@ -571,6 +575,7 @@ def select_editor():
 
 
 # TODO: download nano editor binary, use it to edit files despite the operate system
+
 # TODO: find a pure python text editor in textualize, or a package for this purpose, or write one
 def edit_file(filepath: str, editor_binpath: str):
     execute_subprogram(editor_binpath, [filepath])
@@ -1247,7 +1252,6 @@ class AppManager:
         init_config: Optional[str] = None,
         new_display: bool = True,
     ):
-        # TODO: recreate the scrcpy instance if it is exited abnormally, such as app closed on device
         import traceback
 
         self.check_clipboard_malfunction()
@@ -1439,8 +1443,6 @@ class AppManager:
                 ret = self.resolve_app_config_reference(ref, sources=[app_name])
         return ret
 
-    # TODO: re-ensure ime preference (activate gboard or adbkeyboard) when the app is focused, to deal with different ime settings per app
-
     @property
     def default_app_config(self):
         return """# Application configuration template
@@ -1479,7 +1481,6 @@ retrieve_app_icon: true
         if not hasattr(self, "all_app_last_used_time_updated"):
             all_app_usage_stats = self.swm.adb_wrapper.list_app_last_visible_time()
             for it in all_app_usage_stats:
-                # TODO: bulk update, improve tinydb i/o speed, separate read from commit
                 app_id = it["app_id"]
                 last_visible_time = it['lastTimeVisible']
                 self.write_app_last_used_time_to_db(app_id, last_visible_time)
@@ -1795,8 +1796,6 @@ class SessionManager:
         return ret
 
     def save(self, session_name: str):
-        # TODO: store all running app launch parameters at "swm_scrcpy_proc_pid_path", then we read and merge them here
-        # TODO: must verify the process is alive by its pid, or exclude it
         import time
 
         assert session_name != "default", "Cannot save a session named 'default'"
@@ -3838,7 +3837,6 @@ class JavaManager:
 # u:object_r:app_data_file:s0:c24,c257,c512,c768
 
 # you can just run setenforce 0 to bypass selinux restrictions and may help with tmux permission issues, but dangerous
-
 
 # TODO: warn the user that tmux may not work properly (permission denied from android termux app if the server is created using swm termux shell)
 class TermuxManager:
