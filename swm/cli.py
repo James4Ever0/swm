@@ -2167,9 +2167,6 @@ for (UsageStats usageStats : stats.values()) {
 
     def check_output_shell(self, cmd_args: list[str], **kwargs):
         return self.check_output(["shell"] + cmd_args, **kwargs)
-
-    # TODO: if app is not foreground, or is ime input target but has different display id, then we close the corresponding scrcpy window
-
     def get_display_density(self, display_id: int):
         # adb shell wm density -d <display_id>
         # first, it must exist
