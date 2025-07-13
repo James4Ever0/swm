@@ -1941,9 +1941,12 @@ class SessionManager:
 class DeviceManager:
     def __init__(self, swm: SWM):
         self.swm = swm
+        self.current_device_file = os.path.join(self.swm.config.cache_dir, "current_device.txt")
 
     def list(self, print_formatted: bool = False, show_last_used=False):
         ret = self.swm.adb_wrapper.list_device_detailed()
+        selected_device = self.read_current_device()
+        ret = [dict(selected=it['id'] == selected_device, **it) for it in ret]
         if print_formatted:
             load_and_print_as_dataframe(ret)
         return ret
@@ -1974,7 +1977,17 @@ class DeviceManager:
 
     def select(self, query: str):
         device_id = self.resolve_device_query(query)
-        self.swm.set_current_device(device_id)
+        # TODO: save current device to file
+        self.write_current_device(device_id)
+        # self.swm.set_current_device(device_id)
+    def write_current_device(self, device_id:str):
+        with open(self.current_device_file, 'w+') as f:
+            f.write(device_id)
+    def read_current_device(self):
+        if os.path.isfile(self.current_device_file):
+            with open(self.current_device_file, 'r') as f:
+                ret = f.read().strip()
+                if ret: return ret
 
     def name(self, device_id: str, alias: str):
         self.swm.adb_wrapper.set_device_name(device_id, alias)
@@ -3995,7 +4008,6 @@ def create_default_config(cache_dir: str):
     return omegaconf.OmegaConf.create(
         {
             "cache_dir": cache_dir,
-            "device": None,  # TODO: not storing this value here, but upsert it to local tinydb
             "zoom_factor": 1.0,
             "db_path": os.path.join(cache_dir, "apps.db"),
             "session_autosave": True,
@@ -4213,8 +4225,8 @@ def main():
 
         # Handle device selection
         cli_device = args["--device"]
-        config_device = config.device
-
+        #config_device = config.device
+        config_device = swm.device_manager.read_current_device()
         if cli_device is not None:
             default_device = cli_device
         else:
