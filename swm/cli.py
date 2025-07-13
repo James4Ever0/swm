@@ -951,8 +951,9 @@ class SWM:
 
     def repl(self):
         print("Warning: REPL mode is not implemented yet.")
-        ...
-
+        while True:
+            user_input = input("swm> ")
+            print("User input:", user_input)
     @property
     def local_icon_dir(self):
         assert self.current_device
