@@ -3202,7 +3202,7 @@ class ScrcpyWrapper:
             # TODO: write additional launch parameters here so we can create a session based on these files
         # TODO: save this session "latest", make this configuable
         latest_session_name = "latest"
-        self.swm.session_manager.save(latest_session_name) # you may also save on exit?
+        if self.is_device_connected(): self.swm.session_manager.save(latest_session_name) # you may also save on exit?
         try:
             if ime_preference == "adbkeyboard":
                 self.start_sidecar_unicode_input(
@@ -3234,7 +3234,8 @@ class ScrcpyWrapper:
                 # [server] WARN: Could not inject char u+4f60
                 # TODO: use adb keyboard for pasting text from clipboard
         finally:
-            self.swm.session_manager.save(latest_session_name)
+            if self.is_device_connected():
+                self.swm.session_manager.save(latest_session_name)
             
             if lock:
                 try:
