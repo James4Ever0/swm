@@ -951,9 +951,16 @@ class SWM:
 
     def repl(self):
         print("Warning: REPL mode is not implemented yet.")
+        # TODO: implement repl specific commands and exclude those from cli commands
         while True:
             user_input = input("swm> ")
             print("User input:", user_input)
+            input_args = user_input.strip().split()
+            if input_args:
+                swm_args = parse_args(cli_suggestion_limit = 1, args=input_args, exit_on_error= False, print_help_on_error=False)
+                if swm_args:
+                    # execute a separate thread for new task, output displayed in tui window
+                    ...
     @property
     def local_icon_dir(self):
         assert self.current_device
@@ -4068,21 +4075,31 @@ def override_system_excepthook(
     sys.excepthook = custom_excepthook
 
 
-def parse_args(cli_suggestion_limit: int):
+def parse_args(cli_suggestion_limit: int, args:list[str]= [], exit_on_error=True, print_help_on_error=True, show_suggestion_on_error=True):
     from docopt import docopt, DocoptExit
     import sys
 
     try:
-        return docopt(__doc__, version=f"SWM {__version__}", options_first=True)
+        if args:
+            ret = docopt(__doc__, args=args, version=f"SWM {__version__}", options_first=True)
+        else:
+            ret= docopt(__doc__, version=f"SWM {__version__}", options_first=True)
+        return ret
     except DocoptExit:
-        # print the docstring
-        print(DOCSTRING)
+        
+        if print_help_on_error:
+            # print the docstring
+            print(DOCSTRING)
         # must be something wrong with the arguments
-        argv = sys.argv
-        user_input = "swm " + (" ".join(argv[1:]))
-        show_suggestion_on_wrong_command(user_input, limit=cli_suggestion_limit)
+        if show_suggestion_on_error:
+            if args:
+                argv=args
+            else:
+                argv = sys.argv
+            user_input = "swm " + (" ".join(argv[1:]))
+            show_suggestion_on_wrong_command(user_input, limit=cli_suggestion_limit)
         # TODO: configure "limit" in swm config yaml
-    exit(1)
+    if exit_on_error: exit(1)
 
 
 def main():
