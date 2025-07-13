@@ -2859,8 +2859,6 @@ class ScrcpyWrapper:
                 ret[display_id] = dict(x=x_size, y=y_size)
         return ret
 
-    # TODO: use "scrcpy --list-apps" instead of using aapt to parse app labels
-
     def list_package_id_and_alias(self):
         # will not list apps without activity or UI
         # scrcpy --list-apps
