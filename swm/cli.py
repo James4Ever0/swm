@@ -126,7 +126,11 @@ Environment variables:
 # TODO: ask the user to "run anyway" when multiple instances of the same app are running
 
 # TODO: dynamically change the fps of scrcpy, only let the foreground one be full and others be 1 fps
+
 # TODO: use platform specific window session manager
+
+# TODO: change display size and dpi dynamically while scrcpy window running, with commandline or mouse dragging (display size), keyboard shortcuts (dpi)
+
 # TODO: run swm daemon at first invocation, monitoring window changes, fetch app list in the background, etc
 
 # TODO: globally install this package into the first folder with permission in PATH, or use other tools (actually, adding current binary folder to PATH is better than this, so warn user if not added to PATH)
@@ -146,6 +150,7 @@ from tinydb.table import Document
 __version__ = "0.1.0"
 
 # TODO: refactor all code in scrcpywrapper and adbwrapper that does not require device_id with NO_DEVICE_ID
+
 NO_DEVICE_ID = "NO_DEVICE_ID"
 
 
