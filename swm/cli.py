@@ -65,38 +65,27 @@ Environment variables:
   FZF           Path to FZF binary (overrides SWM managed FZF)
 """
 
-# TODO: use filelock to handle app recovery clashing at device reconnection, release the lock when app is launched for sure
-
 # TODO: check gboard version, include gboard apk in our binary release, install gboard as our official companion input method app in uhid mode
 
 # TODO: blacklist commands, change execution preferences, configs, commandline help based on healthcheck result per device
 
 # TODO: Implement swm mount command, mount host volume to device and vice versa
 
-# TODO: use java to collect usagestats, infer app last used time, instead of directory access time enumeration (incorrect), or increase enumeration depth? (slow)
-
-# TODO: terminate scrcpy with the same app_id running when running new app, or refuse to launch, by configuration "launch_policy"
-
-# TODO: infer the reason of scrcpy closing, like device_disconnect, app_gone, user_requested, new_instance, unknown
-
-# TODO: restart application if the device is physically disconnected at the time it connects back
-
 # TODO: paste from pc to device using adb keyboard by listening for paste events when clipboard fails
-
-# TODO: fix IME issues using custom scrcpy GUI such as https://github.com/me2sy/MYScrcpy
 
 # TODO: display placeholder window with text "Device offline", the same icon and window size while waiting device online
 
 # TODO: display different commandline help for rooted and non-rooted devices
 
 # TODO: generate, store and use android device uuid instead of device_id from adb devices for storing icons
+
 # TODO: create desktop shortcuts for running specific swm commands
 
 # TODO: manage all stdout and stderr into a separate textualize window, then setup a prompt or repl for doing various things like switching ime, starting and managing multiple sessions, managing wifi, bluetooth, files, etc.
 
-# TODO: save session to all devices with the same name, and restore with the same name
+# TODO: implement cli commands for saving session to all devices with the same name, and restoring with the same name
 
-# TODO: hold the main display lock if it is unlocked, till swm is not connected
+# TODO: hold the main display lock if it is unlocked, till swm is not connected (make it configurable in swm config)
 
 # TODO: setup network connection between PC client and on device daemon via:
 # adb forward tcp:<PC_PORT> tcp:<DEVICE_PORT>
@@ -916,8 +905,9 @@ class SWM:
 
     def healthcheck(self): # TODO: download x86 and x86_64 version of aapt, running on android
         print("Warning: Healthcheck is not implemented yet.")
+        basedir = self.config.cache_dir
         # check init status
-        swm_init_status = ...
+        swm_init_status =check_init_complete(basedir)
         if swm_init_status:
             # check device online
             device_online = ...
