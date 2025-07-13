@@ -3190,16 +3190,20 @@ class ScrcpyWrapper:
 
         swm_scrcpy_proc_pid_path = self.generate_swm_scrcpy_proc_pid_path()
         # lock = None
+    
+        self.start_sidecar_app_launch_filelock_releaser(proc=proc, lock=lock)
+        # write the pid to the path
+        with open(swm_scrcpy_proc_pid_path, "w") as f:
+            data = dict(
+                pid=proc_pid, device_id=self.device, launch_params=launch_params
+            )
+            content_data = json.dumps(data, indent=4, ensure_ascii=False)
+            f.write(content_data)
+            # TODO: write additional launch parameters here so we can create a session based on these files
+        # TODO: save this session "latest", make this configuable
+        latest_session_name = "latest"
+        self.swm.session_manager.save(latest_session_name)
         try:
-            self.start_sidecar_app_launch_filelock_releaser(proc=proc, lock=lock)
-            # write the pid to the path
-            with open(swm_scrcpy_proc_pid_path, "w") as f:
-                data = dict(
-                    pid=proc_pid, device_id=self.device, launch_params=launch_params
-                )
-                content_data = json.dumps(data, indent=4, ensure_ascii=False)
-                f.write(content_data)
-                # TODO: write additional launch parameters here so we can create a session based on these files
             if ime_preference == "adbkeyboard":
                 self.start_sidecar_unicode_input(
                     proc=proc,
