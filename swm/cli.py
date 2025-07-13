@@ -1955,15 +1955,21 @@ class DeviceManager:
         # adb shell settings setprop net.hostname "NEW_NAME"
 
     def search(self, query: Optional[str] = None):
-        return self.swm.fzf_wrapper.select_item(
-            self.list(print_formatted=False), query=query
+        items = self.list(print_formatted=False)
+        items = ["%s %s" % (it['id'], it['name']) for it in items]
+        selected_item =  self.swm.fzf_wrapper.select_item(
+            items, query=query
         )
+        device_id = selected_item.split()[0]
+        assert device_id
+        return device_id
 
     def resolve_device_query(self, query: str):
         if query in self.list(print_formatted=False):
             device_id = query
         else:
             device_id = self.search(query)
+        assert device_id
         return device_id
 
     def select(self, query: str):
