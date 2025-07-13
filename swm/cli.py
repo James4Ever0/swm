@@ -3167,9 +3167,6 @@ class ScrcpyWrapper:
         if not previous_ime:
             print("Warning: Previous IME unrecognized")
 
-        # TODO: capture stdout for getting new display id
-        # TODO: collect missing char into batches and execute once every 0.5 seconds
-        # TODO: restart the app in given display if exited, or just close the window (configure this behavior as an option "on_app_exit")
         # not to use the compat "launch_params" since we may have trouble when the config file is edited.
         # TODO: configure this behavior further, by prefer "init_config" or "freezed_parameters"
         # TODO: build "env" when prefer "freezed_parameters"
