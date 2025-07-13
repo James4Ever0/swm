@@ -2415,8 +2415,6 @@ for (UsageStats usageStats : stats.values()) {
     def set_keyboard_su(self, keyboard_activity_name: str):
         self.execute_su_cmd("ime set %s" % keyboard_activity_name)
 
-    # TODO: update apk.zip with gboard apks
-
     def download_gboard_apk(self, gboard_bin_id: str):
         import requests
 
@@ -2489,8 +2487,6 @@ for (UsageStats usageStats : stats.values()) {
 
     def execute_java_code(self, java_code, sudo=False, capture_output=False):
         # TODO: Capture execution output, inplant success challenge such as simple arithmatics
-        # TODO: Write a java repl accessibke via swm cli
-        # TODO: Run termux shell via swm cli, check if termux is installed first
         # TODO: Force airplane mode when using swm
         # print("Executing Java code:")
         # print(java_code)
