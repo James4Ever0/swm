@@ -2605,8 +2605,7 @@ for (UsageStats usageStats : stats.values()) {
                 apk_remote_path, icon_remote_dir
             )
             icon_format = icon_remote_raw_path.lower().split(".")[-1]
-            # TODO:
-            # use self.remote.* for all remote operations
+            # TODO: use self.remote.* for all remote operations
             print("Icon format:", icon_format)
             if icon_format == "xml":
                 # for debugging
@@ -2627,7 +2626,6 @@ for (UsageStats usageStats : stats.values()) {
     def convert_app_icon_drawable_to_png(self, app_id: str, icon_png_path: str):
         import traceback
 
-        # check kernel su manager source code for clues?
         # TODO: only use canvas when BitmapDrawable not working
         # ref:  https://stackoverflow.com/questions/44447056/convert-adaptiveicondrawable-to-bitmap-in-android-o-preview
 
@@ -2656,7 +2654,6 @@ bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
 out.close();
 
 """
-        # TODO: store xml files under /data/data/me.zhanghai.android.beeshell/ and change permission into 777, remove afterwards
         try:
             self.execute_java_code(java_code)
         except:
@@ -2734,7 +2731,6 @@ out.close();
         status_blacklist: list[str] = ["unauthorized", "fastboot"],
         with_status: bool = False,
     ) -> List:
-        # TODO: detect and filter unauthorized and abnormal devices
         output = self.check_output(["devices"], device_id=NO_DEVICE_ID)
         devices = []
         for line in output.splitlines()[1:]:
