@@ -910,12 +910,44 @@ class SWM:
         self.session_manager = SessionManager(self)
         self.device_manager = DeviceManager(self)
         self.ime_manager = ImeManager(self)
+        self.file_manager = FileManager(self)
         self.java_manager = JavaManager(self)
         self.termux_manager = TermuxManager(self)
 
-    def healthcheck(self):
+    def healthcheck(self): # TODO: download x86 and x86_64 version of aapt, running on android
         print("Warning: Healthcheck is not implemented yet.")
-        ...
+        # check init status
+        swm_init_status = ...
+        if swm_init_status:
+            # check device online
+            device_online = ...
+            if device_online:
+                # android version requirement met
+                android_version_met = ...
+                # check if android arch is in aarch64 and armhf
+                android_arch_met = ...
+                # list recent apps working
+                app_list_recent_working = ...
+                # app list working
+                app_list_working = ...
+                # ime list working
+                ime_list_working = ...
+                # ime switch working
+                ime_switch_working = ...
+                # check termux installed
+                termux_installed = ...
+                # check java execution
+                java_exec_success = ...
+                # check adbkeyboard installed
+                adbkeyboard_installed = ...
+                # check gboard installed
+                gboard_installed = ...
+                # check mount working
+                mount_working = ...
+                # check reverse mount working
+                mount_reverse_working = ...
+                # check root permission
+                device_rooted = ...
 
     def repl(self):
         print("Warning: REPL mode is not implemented yet.")
@@ -1441,6 +1473,7 @@ retrieve_app_icon: true
             yaml.safe_dump(config, f)
     
     def flush_device_db(self):
+        assert self.swm.on_device_db
         self.swm.on_device_db.flush()
             
     def update_all_app_last_used_time(self):
@@ -3693,10 +3726,12 @@ class ImeManager:
 
 class WirelessManager: ...
 
-
-class FileManager: ...
-
-
+# for mounting file
+class FileManager:
+    def __init__(self, swm:SWM):
+        self.swm = swm
+    def mount_from_device_to_pc(self, device_path:str, pc_path:str):...
+    def mount_from_pc_to_device(self, pc_path:str, device_path:str):...
 class JavaManager:
     def __init__(self, swm: SWM):
         self.swm = swm
