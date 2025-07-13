@@ -917,6 +917,8 @@ class SWM:
         # check init status
         swm_init_status = check_init_complete(basedir)
         if swm_init_status:
+            swm_bin_directory_structure_ready = ...
+            scrcpy_version_matching = ...
             # check device online
             device_online = ...
             if device_online:
@@ -1508,20 +1510,20 @@ retrieve_app_icon: true
 
         for it in package_list:
             package_id = it["id"]
-            if update_cache:
+            # if update_cache:
+            #     last_used_time = self.get_app_last_used_time_from_device(package_id)
+            #     if last_used_time is None:
+            #         last_used_time = self.get_app_last_used_time_from_db(package_id)
+            #     else:
+            #         # update db
+            #         self.write_app_last_used_time_to_db(package_id, last_used_time)
+            # else:
+            last_used_time = self.get_app_last_used_time_from_db(package_id)
+            if last_used_time is None:
                 last_used_time = self.get_app_last_used_time_from_device(package_id)
-                if last_used_time is None:
-                    last_used_time = self.get_app_last_used_time_from_db(package_id)
-                else:
+                if last_used_time is not None:
                     # update db
                     self.write_app_last_used_time_to_db(package_id, last_used_time)
-            else:
-                last_used_time = self.get_app_last_used_time_from_db(package_id)
-                if last_used_time is None:
-                    last_used_time = self.get_app_last_used_time_from_device(package_id)
-                    if last_used_time is not None:
-                        # update db
-                        self.write_app_last_used_time_to_db(package_id, last_used_time)
             if last_used_time is None:
                 last_used_time = datetime.fromtimestamp(0)
             it["last_used_time"] = last_used_time
@@ -2885,7 +2887,7 @@ class ScrcpyWrapper:
     def list_package_id_and_alias(self):
         # will not list apps without activity or UI
         # scrcpy --list-apps
-        output = self.check_output(["--list-apps"])
+        output = self.check_output(["--list-apps"], basic=True)
         # now, parse these apps
         parseable_lines = []
         for line in output.splitlines():
@@ -2909,9 +2911,17 @@ class ScrcpyWrapper:
     def set_device(self, device_id: str):
         self.device = device_id
 
-    def _build_cmd(self, args: List[str], device_id=None) -> List[str]:
+    def _build_cmd(self, args: List[str], device_id=None, basic=False) -> List[str]:
         # TODO: make these configs into a config file, such as "scrcpy_base_args"
         cmd = [self.scrcpy_path]
+        if device_id == NO_DEVICE_ID:
+            ...
+        elif device_id:
+            cmd.extend(["-s", device_id])
+        elif self.device:
+            cmd.extend(["-s", self.device])
+        cmd.extend(args)
+        if basic: return cmd
         # TODO: display fps when loglevel is verbose
         # cmd.extend(['--print-fps'])
         # <scrcpy stdout> INFO: 61 fps
@@ -2945,25 +2955,19 @@ class ScrcpyWrapper:
         # cmd.extend(["--verbosity=verbose"])
         # <scrcpy stdout> VERBOSE: input: key up   code=67 repeat=0 meta=000000
         # <scrcpy stdout> VERBOSE: input: clipboard 0 nopaste "<content>"
-        if device_id == NO_DEVICE_ID:
-            ...
-        elif device_id:
-            cmd.extend(["-s", device_id])
-        elif self.device:
-            cmd.extend(["-s", self.device])
-        cmd.extend(args)
+
         return cmd
 
-    def execute(self, args: List[str]):
-        cmd = self._build_cmd(args)
+    def execute(self, args: List[str], basic=False):
+        cmd = self._build_cmd(args, basic=basic)
         subprocess.run(cmd, check=True)
 
-    def execute_detached(self, args: List[str]):
-        cmd = self._build_cmd(args)
+    def execute_detached(self, args: List[str], basic=False):
+        cmd = self._build_cmd(args, basic=basic)
         spawn_and_detach_process(cmd)
 
-    def check_output(self, args: List[str]) -> str:
-        cmd = self._build_cmd(args)
+    def check_output(self, args: List[str], basic=False) -> str:
+        cmd = self._build_cmd(args, basic=basic) #; print(cmd)
         output = subprocess.check_output(cmd).decode("utf-8")
         return output
 
