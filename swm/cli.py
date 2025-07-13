@@ -109,24 +109,20 @@ Environment variables:
 # adb forward --remove
 # adb forward --remove-all
 
-# TODO: list running background apps viewable in taskbar
-
 # TODO: Mark session with PC signature so we can prompt the user if mismatch, like "This is a remote session from xyz, do you trust this machine?"
+
 # TODO: Sign session and other files on android device with public key to ensure integrity (using gnupg or something)
 
 # TODO: provide a loadable, editable app alias file in yaml for faster launch
 
 # BUG: cannot paste when screen is locked
-# TODO: unlock the screen automatically using user provided scripts, note down the success rate, last success time, and last failure time
 
-# TODO: suggest possible command completions when the user types a wrong command, using levenshtein
+# TODO: unlock the screen automatically using user provided scripts, note down the success rate, last success time, and last failure time
 
 # TODO: when the main screen is locked, clipboard may fail to traverse. warn the user and ask to unlock the screen. (or automatically unlock the screen, if possible)
 
-# TODO: consider a command to mirror the main display
+# TODO: implement a cli command to mirror the main display, along with its config just like app config
 
-# only import package when needed
-# TODO: create a filelock or pid file to prevent multiple instances of the same app running
 # TODO: ask the user to "run anyway" when multiple instances of the same app are running
 
 # TODO: dynamically change the fps of scrcpy, only let the foreground one be full and others be 1 fps
