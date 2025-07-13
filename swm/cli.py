@@ -1980,7 +1980,43 @@ class AdbWrapper:
         self.remote_swm_dir = self.config.android_session_storage_path
         self.initialize()
         self.remote = self
-    
+        
+    def install_script_if_missing_or_mismatch(self, script_content:str, remote_script_path:str):
+        installed = self.check_script_missing_or_mismatch(script_content = script_content, remote_script_path = remote_script_path)
+        if not installed:
+            print("Installing script")
+            self.write_file(
+                remote_path = remote_script_path, content = script_content
+            )
+            ret = self.check_script_missing_or_mismatch(script_content = script_content, remote_script_path = remote_script_path)
+            if ret:
+                print("Script installed successfully at %s" % remote_script_path)
+                return ret
+            else:
+                raise ValueError("Script installation at %s failed" % remote_script_path)
+        else:
+            print("Script already installed at %s" % remote_script_path)
+            return True
+
+    def check_script_missing_or_mismatch(self, script_content:str, remote_script_path:str):
+        script_exists = self.test_path_existance_su(
+           remote_path = remote_script_path)
+        sha256_script = sha256sum(text = script_content)
+        if script_exists:
+            sha256_device_script = self.sha256sum(path=remote_script_path)
+            if sha256_script == sha256_device_script:
+                return True
+            else:
+                print(
+                    "Warning: Termux init script exists (sha256: %s) but is not the same (sha256: %s)."
+                    % (sha256_device_script, sha256_script)
+                )
+        else:
+            print(
+                "Warning: script '%s' does not exist."
+                % remote_script_path
+            )
+        return False
     def list_app_last_visible_time(self):
         import datetime
         java_code = """
@@ -3624,11 +3660,16 @@ class ImeManager:
 
     def run_previous_ime_restoration_script(self):
         print("Warning: run_previous_ime_restoration_script is not implemented yet")
-        self.install_previous_ime_restoration_script()
-        ...
+        installation_path = self.install_previous_ime_restoration_script()
+        cmd = ["su", '-c', "sh", "-c", ""]
+        self.swm.adb_wrapper.execute_shell(cmd)
 
     def install_previous_ime_restoration_script(self):
         print("Warning: install_previous_ime_restoration_script is not implemented yet")
+        installation_path = ""
+        script_content = """"""
+        self.swm.adb_wrapper.install_script_if_missing_or_mismatch(script_content = script_content, remote_script_path = installation_path)
+        # just write the content to the path, if sha256 mismatch or file missing
         # execute this method everytime run a new app
         # run it on android as root
         # steps:
@@ -3638,7 +3679,7 @@ class ImeManager:
         #   if pid exist and the pid is running, exit program
         #   if pid does not exist, remove the pid file
         # create the pid file with the child pid (about to be detached)
-        # look for "@scrcpy_" unix domain sockets on device
+        # look for "@scrcpy_" unix domain sockets on device (adb shell cat /proc/net/unix | grep @scrcpy_)
         #  if "@scrcpy_" unix domain sockets exist, continue execution
         #  if no "@scrcpy_" unix domain sockets exist, exit loop
         # look for previous ime record file
@@ -3852,8 +3893,11 @@ exec "$SHELL" -li $@
                 % self.path_init_script
             )
         return False
-
     def install_termux_init_script(self):
+        script_content = self.content_init_script
+        remote_script_path = self.path_init_script
+        self.swm.adb_wrapper.install_script_if_missing_or_mismatch(script_content = script_content, remote_script_path = remote_script_path)
+    def _install_termux_init_script(self):
         installed = self.check_termux_init_script_installed()
         if not installed:
             print("Installing Termux init script")
