@@ -912,8 +912,10 @@ class SWM:
     def healthcheck(self): # TODO: download x86 and x86_64 version of aapt, running on android
         print("Warning: Healthcheck is not implemented yet.")
         basedir = self.config.cache_dir
+        swm_partial_functional = ...
+        swm_fully_functional = ...
         # check init status
-        swm_init_status =check_init_complete(basedir)
+        swm_init_status = check_init_complete(basedir)
         if swm_init_status:
             # check device online
             device_online = ...
@@ -1087,21 +1089,23 @@ def load_and_print_as_dataframe(
     list_of_dict, drop_fields={}, show=True, sort_columns=True
 ):
     import pandas
+    if not list_of_dict:
+        formatted_output = "Empty data"
+    else:
+        df = pandas.DataFrame(list_of_dict)
+        if sort_columns:
+            sorted_columns = sorted(df.columns)
 
-    df = pandas.DataFrame(list_of_dict)
-    if sort_columns:
-        sorted_columns = sorted(df.columns)
-
-        # Reindex the DataFrame with the sorted column order
-        df = df[sorted_columns]
-    for key, value in drop_fields.items():
-        if value is False:
-            df.drop(key, axis=1, inplace=True)
-    if "last_used_time" in df.columns:
-        df["last_used_time"] = df["last_used_time"].transform(
-            lambda x: x.strftime("%Y-%m-%d %H:%M")
-        )
-    formatted_output = df.to_string(index=False)
+            # Reindex the DataFrame with the sorted column order
+            df = df[sorted_columns]
+        for key, value in drop_fields.items():
+            if value is False:
+                df.drop(key, axis=1, inplace=True)
+        if "last_used_time" in df.columns:
+            df["last_used_time"] = df["last_used_time"].transform(
+                lambda x: x.strftime("%Y-%m-%d %H:%M")
+            )
+        formatted_output = df.to_string(index=False)
     if show:
         print(formatted_output)
     return formatted_output
