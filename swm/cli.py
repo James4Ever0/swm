@@ -1197,7 +1197,7 @@ class AppManager:
     def __init__(self, swm: SWM):
         self.swm = swm
         self.config = swm.config
-    
+
     def terminate(self, app_id: str):
         cmd = f"am force-stop {app_id}".split()
         self.swm.adb_wrapper.execute_shell(cmd)
@@ -1926,14 +1926,18 @@ class SessionManager:
             "device": device,
             "pc": pc,
             # "windows": self._get_window_states(),
-            "windows": self.get_window_states_for_device_by_scrcpy_pid_files(drop_pid=True),
+            "windows": self.get_window_states_for_device_by_scrcpy_pid_files(
+                drop_pid=True
+            ),
         }
 
         self._save_session_data(session_name, session_data)
 
-    def get_window_states_for_device_by_scrcpy_pid_files(self, drop_pid:bool):
+    def get_window_states_for_device_by_scrcpy_pid_files(self, drop_pid: bool):
         swm_info_list = (
-            self.swm.scrcpy_wrapper.get_running_swm_managed_scrcpy_info_list(drop_pid=drop_pid)
+            self.swm.scrcpy_wrapper.get_running_swm_managed_scrcpy_info_list(
+                drop_pid=drop_pid
+            )
         )
         return swm_info_list
 
@@ -1948,18 +1952,25 @@ class SessionManager:
         assert not self.adb_wrapper.test_path_existance(targetpath)
         self.adb_wrapper.execute(["shell", "cp", sourcepath, targetpath])
 
-    def view(self, session_name: str, style = "plain"):
+    def view(self, session_name: str, style="plain"):
         import yaml
+
         # retrieve and load session config
         session_data = self._load_session_data(session_name)
         # format output
         if style == "plain":
             format_output = yaml.dump(session_data, default_flow_style=False)
         elif style == "brief":
-            pc_hostname = ...
-            device_name = ...
-            windows = ...
-            brief_data = dict(pc_hostname=pc_hostname, device_name=device_name,windows=windows)
+            pc_hostname = session_data["pc"]["hostname"]
+            device_id = session_data["device"]
+            window_names = []
+            for it in session_data['windows']:
+                launch_params = it['launch_params']
+                title = launch_params['title']
+                window_names.append(title)
+            brief_data = dict(
+                pc_hostname=pc_hostname, device_id=device_id, window_names=window_names
+            )
             format_output = yaml.dump(brief_data, default_flow_style=False)
 
         else:
@@ -2392,7 +2403,7 @@ for (UsageStats usageStats : stats.values()) {
         # print("Ret:", ret)
         return ret
 
-    def reset_display(self, display_id:int):
+    def reset_display(self, display_id: int):
         cmd = "wm reset -d %s" % display_id
         self.execute_su_cmd(cmd)
 
@@ -4680,9 +4691,9 @@ def main():
                     args["<query>"]
                 )
                 if args["plain"]:
-                    style="plain"
-                elif args['brief']:
-                    style="brief"
+                    style = "plain"
+                elif args["brief"]:
+                    style = "brief"
                 else:
                     raise ValueError("Please specify a style")
                 swm.session_manager.view(session_name, style=style)
