@@ -33,6 +33,7 @@ Usage:
   swm [options] session restore [session_name]
   swm [options] session delete <query>
   swm [options] session edit <query>
+  swm [options] session view <query>
   swm [options] session save <session_name>
   swm [options] session copy <source> <target>
   swm [options] device list [last-used]
@@ -1928,6 +1929,19 @@ class SessionManager:
         assert self.adb_wrapper.test_path_existance(sourcepath)
         assert not self.adb_wrapper.test_path_existance(targetpath)
         self.adb_wrapper.execute(["shell", "cp", sourcepath, targetpath])
+    
+    def view(self, session_name: str):
+        # retrieve and load session config
+        session_data = self._load_session_data(session_name)
+        # format output
+
+    def _load_session_data(self, session_name: str):
+        import yaml
+        session_path = self.get_session_path(session_name)
+        assert self.adb_wrapper.test_path_existance(session_path)
+        session_data = self.adb_wrapper.read_file(session_path)
+        session_data = yaml.safe_load(session_data)
+        return session_data
 
     def edit(self, session_name: str):
         import tempfile
@@ -2109,6 +2123,7 @@ class AdbWrapper:
     def install_script_if_missing_or_mismatch(
         self, script_content: str, remote_script_path: str
     ):
+        self.assert_absolute_path(remote_script_path)
         installed = self.check_script_missing_or_mismatch(
             script_content=script_content, remote_script_path=remote_script_path
         )
@@ -2132,6 +2147,7 @@ class AdbWrapper:
     def check_script_missing_or_mismatch(
         self, script_content: str, remote_script_path: str
     ):
+        self.assert_absolute_path(remote_script_path)
         script_exists = self.test_path_existance_su(remote_path=remote_script_path)
         sha256_script = sha256sum(text=script_content)
         if script_exists:
@@ -2237,7 +2253,7 @@ for (UsageStats usageStats : stats.values()) {
 
         return ret
 
-    def enable_selinux_delayed(self, delay):
+    def enable_selinux_delayed(self, delay:float):
         import time
 
         def enable_selinux_runner():
@@ -2252,6 +2268,7 @@ for (UsageStats usageStats : stats.values()) {
         return ret
 
     def check_file_permission(self, remote_path: str):
+        self.assert_absolute_path(remote_path)
         if self.test_path_existance_su(remote_path):
             user = self.check_output_su(f"stat -c '%U' '{remote_path}'").strip()
             return user
@@ -2297,7 +2314,7 @@ for (UsageStats usageStats : stats.values()) {
         ret = split_lines(ret)
         return ret
 
-    def set_current_ime(self, ime_name):
+    def set_current_ime(self, ime_name:str):
         self.execute_su_cmd(f"settings put secure default_input_method {ime_name}")
 
     def check_output_su(self, cmd: str, **kwargs):
@@ -2359,7 +2376,7 @@ for (UsageStats usageStats : stats.values()) {
         data = parse_dumpsys_active_apps(output)
         return data
 
-    def check_app_existance(self, app_id):
+    def check_app_existance(self, app_id:str):
         apk_path = self.get_app_apk_path(app_id)
         if apk_path:
             return True
@@ -2409,14 +2426,14 @@ for (UsageStats usageStats : stats.values()) {
     def execute_shell(self, cmd_args: list[str], **kwargs):
         self.execute(["shell", *cmd_args], **kwargs)
 
-    def get_device_name(self, device_id):
+    def get_device_name(self, device_id:str):
         # self.set_device(device_id)
         output = self.check_output(
             ["shell", "settings", "get", "global", "device_name"], device_id=device_id
         ).strip()
         return output
 
-    def set_device_name(self, device_id, name):
+    def set_device_name(self, device_id:str, name:str):
         # self.set_device(device_id)
         self.execute_shell(
             ["settings", "put", "global", "device_name", name],
@@ -2427,21 +2444,23 @@ for (UsageStats usageStats : stats.values()) {
         return self.device in self.list_device_ids()
 
     def create_file_if_not_exists(self, remote_path: str):
+        self.assert_absolute_path(remote_path)
         if not self.test_path_existance(remote_path):
             basedir = os.path.dirname(remote_path)
             self.create_dirs(basedir)
             self.touch(remote_path)
 
     def touch(self, remote_path: str):
+        self.assert_absolute_path(remote_path)
         self.execute(["shell", "touch", remote_path])
 
     def initialize(self):
         if self.online():
             self.create_swm_dir()
         
-    def assert_absolute_path(self, remote_path:str):
-        if not remote_path.startswith("/"):
-            raise ValueError("remote_path must be absolute, given '%s'"% remote_path)
+    def assert_absolute_path(self, path:str):
+        if not path.startswith("/"):
+            raise ValueError("Path must be absolute, given '%s'"% path)
 
     def test_path_existance(self, remote_path: str):
         self.assert_absolute_path(remote_path)
@@ -2498,6 +2517,8 @@ for (UsageStats usageStats : stats.values()) {
         """Read a remote file's content as a string."""
         import tempfile
 
+        self.assert_absolute_path(remote_path)
+
         with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
             tmp_path = tmp_file.name
         try:
@@ -2509,6 +2530,7 @@ for (UsageStats usageStats : stats.values()) {
 
     def write_file(self, remote_path: str, content: str):
         import tempfile
+        self.assert_absolute_path(remote_path)
 
         """Write a string to a remote file."""
         with tempfile.NamedTemporaryFile(mode="w", delete=False) as tmp_file:
@@ -2521,10 +2543,14 @@ for (UsageStats usageStats : stats.values()) {
 
     def pull_file(self, remote_path: str, local_path: str):
         """Pull a file from the device to a local path."""
+        self.assert_absolute_path(remote_path)
+        self.assert_absolute_path(local_path)
         self.execute(["pull", remote_path, local_path])
 
     def push_file(self, local_path: str, remote_path: str):
         """Push a local file to the device."""
+        self.assert_absolute_path(remote_path)
+        self.assert_absolute_path(local_path)
         self.execute(["push", local_path, remote_path])
 
     def get_swm_apk_path(self, apk_name: str) -> str:
@@ -2609,6 +2635,7 @@ for (UsageStats usageStats : stats.values()) {
 
     def install_apk(self, apk_path: str, instant=False):
         """Install an APK file on the device."""
+        self.assert_absolute_path(apk_path)
         if os.path.exists(apk_path):
             cmd = ["install"]
             if instant:
@@ -2633,7 +2660,7 @@ for (UsageStats usageStats : stats.values()) {
     def uninstall_app(self, app_id: str):
         self.execute(["uninstall", app_id])
 
-    def execute_java_code(self, java_code, sudo=False, capture_output=False):
+    def execute_java_code(self, java_code:str, sudo=False, capture_output=False):
         # TODO: Capture execution output, inplant success challenge such as simple arithmatics
         # TODO: Force airplane mode when using swm
         # print("Executing Java code:")
@@ -2689,12 +2716,14 @@ for (UsageStats usageStats : stats.values()) {
         return ret
 
     def aapt_dump_badging(self, app_apk_remote_path: str):
+        self.assert_absolute_path(app_apk_remote_path)
         aapt_bin_path = self.install_aapt_binary()
         cmd = [aapt_bin_path, "dump", "badging", app_apk_remote_path]
         output = self.check_output_su(" ".join(cmd))
         return output
 
     def _get_app_name(self, app_apk_remote_path: str):
+        self.assert_absolute_path(app_apk_remote_path)
         output = self.aapt_dump_badging(app_apk_remote_path)
         lines = grep_lines(output, whitelist=["application-label"])
         app_name = lines[0].split(":")[1].strip().strip("'")
@@ -2708,6 +2737,7 @@ for (UsageStats usageStats : stats.values()) {
         return app_name
 
     def get_app_icon_path(self, app_apk_remote_path: str):
+        self.assert_absolute_path(app_apk_remote_path)
         output = self.aapt_dump_badging(app_apk_remote_path)
         lines = grep_lines(output, whitelist=["application-icon"])
         icon_path = lines[0].split(":")[1].strip().strip("'")
@@ -2732,6 +2762,7 @@ for (UsageStats usageStats : stats.values()) {
         return ret
 
     def create_dirs_if_not_exist(self, dir_path: str):
+        self.assert_absolute_path(dir_path)
         if not self.test_path_existance(dir_path):
             self.create_dirs(dir_path)
 
@@ -2743,6 +2774,7 @@ for (UsageStats usageStats : stats.values()) {
         return tmpdir
 
     def retrieve_app_icon(self, app_id: str, local_icon_path: str):
+        self.assert_absolute_path(local_icon_path)
         remote_icon_png_path = os.path.join(self.remote_icon_dir, f"{app_id}_icon.png")
         tmpdir = self.remote_tmpdir
         if not self.test_path_existance(remote_icon_png_path):
@@ -2773,6 +2805,8 @@ for (UsageStats usageStats : stats.values()) {
 
     def convert_app_icon_drawable_to_png(self, app_id: str, icon_png_path: str):
         import traceback
+
+        self.assert_absolute_path(icon_png_path)
 
         # TODO: only use canvas when BitmapDrawable not working
         # ref:  https://stackoverflow.com/questions/44447056/convert-adaptiveicondrawable-to-bitmap-in-android-o-preview
@@ -2824,9 +2858,12 @@ out.close();
             self.push_file(local_png_path, remote_png_path)
 
     def copy_file(self, src_path: str, dst_path: str):
+        self.assert_absolute_path(src_path)
+        self.assert_absolute_path(dst_path)
         self.execute_shell(["cp", src_path, dst_path])
 
     def remove_dir(self, dir_path: str, confirm=True):
+        self.assert_absolute_path(dir_path)
         if not self.test_path_existance(dir_path):
             print("Path does not exist:", dir_path)
             return
@@ -2838,6 +2875,7 @@ out.close();
         self.execute_shell(["rm", "-rf", dir_path])
 
     def remove_file(self, file_path: str, confirm=True):
+        self.assert_absolute_path(file_path)
         if not self.test_path_existance(file_path):
             print("Path does not exist:", file_path)
             return
@@ -2915,6 +2953,7 @@ out.close();
         return packages
 
     def ensure_dir_existance(self, dir_path: str):
+        self.assert_absolute_path(dir_path)
         if self.test_path_existance(dir_path):
             return
         print("Directory %s not found, creating it now..." % dir_path)
@@ -2925,9 +2964,11 @@ out.close();
         self.ensure_dir_existance(swm_dir)
 
     def create_dirs(self, dirpath: str):
+        self.assert_absolute_path(dirpath)
         self.execute(["shell", "mkdir", "-p", dirpath])
 
     def push_aapt_su(self, target_path_su: str):
+        self.assert_absolute_path(target_path_su)
         device_path = os.path.join(self.config.android_session_storage_path, "aapt")
         device_architecture = self.get_device_architecture()
         bin_arch = get_android_bin_arch(device_architecture)
@@ -2939,10 +2980,11 @@ out.close();
         self.execute_su_cmd("chmod 700 %s" % target_path_su)
 
     def pull_session(self, session_name: str, local_path: str):
+        self.assert_absolute_path(local_path)
         remote_path = os.path.join(
             self.config.android_session_storage_path, session_name
         )
-        self.execute(["pull", remote_path, local_path])
+        self.pull_file(remote_path, local_path)
 
 
 class ScrcpyWrapper:
@@ -4581,6 +4623,11 @@ def main():
                     args["<query>"]
                 )
                 swm.session_manager.edit(session_name)
+            elif args["view"]:
+                session_name = swm.session_manager.resolve_session_query(
+                    args["<query>"]
+                )
+                swm.session_manager.view(session_name)
             else:
                 ...  # Implement other device specific commands
 
