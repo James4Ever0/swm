@@ -67,6 +67,8 @@ Environment variables:
   FZF           Path to FZF binary (overrides SWM managed FZF)
 """
 
+MAIN_DISPLAY = -1
+
 # TODO: add timeout on all subprocess commands, except for those interactive or indefinite ones
 
 # TODO: check gboard version, include gboard apk in our binary release, install gboard as our official companion input method app in uhid mode
@@ -963,6 +965,7 @@ class SWM:
         self.app_manager = AppManager(self)
         self.session_manager = SessionManager(self)
         self.device_manager = DeviceManager(self)
+        self.repl_manager = ReplManager(self)
         self.ime_manager = ImeManager(self)
         self.file_manager = FileManager(self)
         self.java_manager = JavaManager(self)
@@ -1023,23 +1026,7 @@ class SWM:
 
     def repl(self):
         print("Warning: REPL mode is not implemented yet.")
-        # TODO: implement repl specific commands and exclude those from cli commands
-        while True:
-            user_input = input("swm> ")
-            print("User input:", user_input)
-            input_args = user_input.strip().split()
-            if input_args:
-                swm_args = parse_args(
-                    cli_suggestion_limit=1,
-                    args=input_args,
-                    exit_on_error=False,
-                    print_help_on_error=False,
-                    docopt_kwargs=dict(help=False),
-                )
-                if swm_args:
-                    # execute a separate thread for new task, output displayed in tui window
-                    print("Parsed args:", swm_args)
-
+        self.repl_manager.repl()
     @property
     def local_icon_dir(self):
         assert self.current_device
@@ -1637,15 +1624,34 @@ class SessionManager:
         self.swm.adb_wrapper.execute(
             ["shell", "mkdir", "-p", self.session_dir], check=False
         )
-
+    def get_window_size_and_position_info_by_pid(self, pid:int):
+          # get window w h x y is_minimized is_maximized display_id (if possible)
+          # -1 means MAIN_DISPLAY
+          # TODO: collect these info at session saving
+          ret=dict()
+          return ret
     @property
     def template_session_config(self):
-        print(
-            "Warning: 'template_session_config' has not been implemented, returning placeholder instead."
-        )
         return """
 # Session template config
 # Uncomment any options below and begin customization
+# device: ""
+# pc:
+#  fingerprint: ""
+#  hostname: ""
+#  user: ""
+# timestamp: 0
+# windows:
+# - device_id: ""
+#  launch_params:
+#    ime_preference: ""
+#    init_config: null
+#    new_display: true
+#    no_audio: true
+#    package_name: ""
+#    scrcpy_args: []
+#    title: ""
+#    window_params: null
 """
 
     def resolve_session_query(self, query: str):
@@ -1921,14 +1927,20 @@ class SessionManager:
         print("Saving session for device:", device)
         # Get current window positions and app states
         pc = self.get_pc_info()
+        timestamp=int(time.time())
+        windows=self.get_window_states_for_device_by_scrcpy_pid_files(
+                drop_pid=False
+            )
+        for it in windows:
+            pid=it["pid"]
+            del it["pid"]
+          it["window_transient_props"]=get_window_size_and_position_info_by_pid(pid)
         session_data = {
-            "timestamp": int(time.time()),
+            "timestamp": timestamp,
             "device": device,
             "pc": pc,
             # "windows": self._get_window_states(),
-            "windows": self.get_window_states_for_device_by_scrcpy_pid_files(
-                drop_pid=True
-            ),
+            "windows": windows,
         }
 
         self._save_session_data(session_name, session_data)
@@ -3738,12 +3750,15 @@ class ScrcpyWrapper:
         return previous_ime
 
     def read_previous_ime_from_device(self):
-        assert self.swm.on_device_db
-        return self.swm.on_device_db.read_previous_ime()
+        if self.swm.adb_wrapper.test_path_existance_su("/data/local/tmp/previous_ime.txt"):
+              return self.swm.adb_wrapper.read_file("/data/local/tmp/previous_ime.txt")
+        #assert self.swm.on_device_db
+        #return self.swm.on_device_db.read_previous_ime()
 
     def store_previous_ime_to_device(self, previous_ime: str):
-        assert self.swm.on_device_db
-        self.swm.on_device_db.write_previous_ime(previous_ime)
+          self.swm.adb_wrapper.write_file(remote_path='/data/local/tmp/previous_ime.txt',previous_ime)
+        #assert self.swm.on_device_db
+        #self.swm.on_device_db.write_previous_ime(previous_ime)
 
     def start_sidecar_scrcpy_app_monitor_thread(
         self, app_id: str, proc: subprocess.Popen
@@ -3904,44 +3919,119 @@ class FzfWrapper:
             return ret
 
 
-class ReplManager: ...
+class ReplManager:
+    def __init__(self, swm:SWM):
+        self.swm=swm
+    def repl(self):
+        # TODO: implement repl specific commands and exclude those from cli commands, like exit, help, task (list|stop)
+        while True:
+            user_input = input("swm> ")
+            print("User input:", user_input)
+            input_args = user_input.strip().split()
+            if input_args:
+                swm_args = parse_args(
+                    cli_suggestion_limit=1,
+                    args=input_args,
+                    exit_on_error=False,
+                    print_help_on_error=False,
+                    docopt_kwargs=dict(help=False),
+                )
+                if swm_args:
+                    # execute a separate thread for new task, output displayed in tui window
+                    print("Parsed args:", swm_args)
+
 
 
 class ImeManager:
     def __init__(self, swm: SWM):
         self.swm = swm
+        self.ime_restorator_installation_path=os.path.join(self.swm.remote_swm_dir, "ime_restorator.sh")
 
     def run_previous_ime_restoration_script(self):
-        print("Warning: run_previous_ime_restoration_script is not implemented yet")
-        return
+        #print("Warning: run_previous_ime_restoration_script is not implemented yet")
+        #return
         installation_path = self.install_previous_ime_restoration_script()
-        cmd = ["su", "-c", "sh", "-c", ""]
+        # check for previous script pid, if running, do not start instance, else just start and record pid.
+        cmd = ["su", "-c", "sh", "-c", "nohup sh %s > /dev/null" % self.ime_restorator_installation_path]
         self.swm.adb_wrapper.execute_shell(cmd)
 
     def install_previous_ime_restoration_script(self):
-        print("Warning: install_previous_ime_restoration_script is not implemented yet")
-        return
-        installation_path = ""
-        script_content = """"""
-        self.swm.adb_wrapper.install_script_if_missing_or_mismatch(
-            script_content=script_content, remote_script_path=installation_path
-        )
-        # just write the content to the path, if sha256 mismatch or file missing
-        # execute this method everytime run a new app
-        # run it on android as root
-        # steps:
-        # check if pid file exist
-        #  if pid file not exist, continue execution
-        #  if pid file exist, check if the pid is running
-        #   if pid exist and the pid is running, exit program
-        #   if pid does not exist, remove the pid file
-        # create the pid file with the child pid (about to be detached)
+        #print("Warning: install_previous_ime_restoration_script is not implemented yet")
+        #return
+        installation_path = self.ime_restorator_installation_path
+        # main script:
         # look for "@scrcpy_" unix domain sockets on device (adb shell cat /proc/net/unix | grep @scrcpy_)
         #  if "@scrcpy_" unix domain sockets exist, continue execution
         #  if no "@scrcpy_" unix domain sockets exist, exit loop
         # look for previous ime record file
         #   if previous ime file exist, enable and set to previous ime
         #   if not exist, just exit
+        main_script="""
+PREV_IME_FILE=/data/local/tmp/previous_ime.txt
+
+while true; do
+    sleep 1
+    if grep -q '@scrcpy_' /proc/net/unix; then
+        # scrcpy still running, do nothing
+        :
+    else
+        # scrcpy gone, restore previous IME
+        if [ -f "$PREV_IME_FILE" ]; then
+            PREV_IME=$(tr -d '\r\n' < "$PREV_IME_FILE")
+            if [ -n "$PREV_IME" ]; then
+                ime enable "$PREV_IME"
+                ime set "$PREV_IME"
+            else
+                echo "Error: IME value empty in $PREV_IME_FILE" >&2
+            fi
+        else
+            echo "Error: Previous IME file missing: $PREV_IME_FILE" >&2
+        fi
+        break
+    fi
+done
+        """
+        script_content = """#!/system/bin/sh
+
+# Get current PID and set PID file path
+CURRENT_PID=$$
+PID_FILEPATH="/data/local/tmp/swm_ime_restorator.pid"
+echo "PID of this script: $$"
+
+# Check for existing PID file
+if [ -f "$PID_FILEPATH" ]; then
+    PREVIOUS_PID=$(cat "$PID_FILEPATH")
+    
+    # Check if previous process is still active
+    if ps -p "$PREVIOUS_PID" > /dev/null 2>&1; then
+        echo "Previous instance running (PID $PREVIOUS_PID). Aborting."
+        exit 1
+    else
+        echo "Found stale PID file. Cleaning up."
+        rm -f "$PID_FILEPATH"
+    fi
+fi
+
+# Create PID file and setup cleanup trap
+echo "$CURRENT_PID" > "$PID_FILEPATH"
+trap 'rm -f "$PID_FILEPATH"' EXIT
+
+echo "Begin execution"
+
+# ====== MAIN SCRIPT LOGIC GOES BELOW ======
+%s
+# ====== MAIN SCRIPT LOGIC ENDS ABOVE ======
+
+# Final cleanup (handled by trap but explicit exit is good practice)
+exit 0
+""" % main_script
+        self.swm.adb_wrapper.install_script_if_missing_or_mismatch(
+            script_content=script_content, remote_script_path=installation_path
+        )
+        return installation_path
+        # just write the content to the path, if sha256 mismatch or file missing
+        # execute this method everytime run a new app
+        # run it on android as root
         ...
 
     def get_current_ime(self):
