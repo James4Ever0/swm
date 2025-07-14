@@ -161,11 +161,12 @@ NO_DEVICE_ID = "NO_DEVICE_ID"
 
 def check_is_rosetta() -> bool:
     import sys
+
     if sys.platform != "darwin":
         return False
     if platform.machine() == "arm64":
         return False
-    
+
     try:
         # Get process architecture using `ps` and `lipo`
         pid = os.getpid()
@@ -175,9 +176,11 @@ def check_is_rosetta() -> bool:
     except subprocess.CalledProcessError:
         return False
 
+
 def get_python_arch():
     import sys
     import shutil
+
     python_exec = sys.executable
     file_exec = shutil.which("file")
     if file_exec:
@@ -190,6 +193,7 @@ def get_python_arch():
             elif "aarch64" in output:
                 return "aarch64"
 
+
 def check_python_and_system_arch_consistent():
     # TODO: check if platform.machine() is the same as platform.processor on macos, if yes, use it to detect rosetta
     python_arch = get_python_arch()
@@ -197,8 +201,9 @@ def check_python_and_system_arch_consistent():
     if python_arch:
         ret = python_arch == system_arch
     else:
-        ret = True # assume arch matching
+        ret = True  # assume arch matching
     return ret
+
 
 def sha256sum(text: str):
     import hashlib
@@ -931,7 +936,7 @@ class SWM:
         self.cache_dir = config.cache_dir
         swm_icon_path = os.path.join(self.cache_dir, "icon", "icon.png")
         if os.path.exists(swm_icon_path):
-            self.swm_icon_path =swm_icon_path
+            self.swm_icon_path = swm_icon_path
         else:
             print("Warning: SWM icon file does not exist at: %s" % swm_icon_path)
             self.swm_icon_path = ""
@@ -949,9 +954,9 @@ class SWM:
         self.fzf_wrapper = FzfWrapper(self.fzf)
 
         # Initialize attributes
-        self.current_device:Optional[str] = None
-        self.current_device_name :Optional[str]= None
-        self.on_device_db :Optional[SWMOnDeviceDatabase]= None
+        self.current_device: Optional[str] = None
+        self.current_device_name: Optional[str] = None
+        self.on_device_db: Optional[SWMOnDeviceDatabase] = None
 
         # Initialize managers
         self.app_manager = AppManager(self)
@@ -976,12 +981,9 @@ class SWM:
 
         print("Python and system arch mismatch:", not python_and_system_arch_consistent)
 
-
         # common in macbook systems
         python_is_rosetta = check_is_rosetta()
         print("Python is running on rosetta:", python_is_rosetta)
-
-
 
         # check init status
         swm_init_status = check_init_complete(basedir)
@@ -1856,6 +1858,7 @@ class SessionManager:
 
     def list(self, show_last_used=False, print_formatted=False) -> List[str]:
         import datetime
+
         session_yaml_paths = [
             f for f in self.adb_wrapper.listdir(self.session_dir) if f.endswith(".yaml")
         ]
@@ -1867,14 +1870,22 @@ class SessionManager:
             session_names.append(name)
             yaml_fullpath = os.path.join(self.session_dir, it)
 
-            atime = self.adb_wrapper.check_output_shell(["stat", '-c', '%X', yaml_fullpath]).strip()
-            mtime = self.adb_wrapper.check_output_shell(["stat", '-c', '%Y', yaml_fullpath]).strip()
-            ctime = self.adb_wrapper.check_output_shell(["stat", '-c', '%Z', yaml_fullpath]).strip()
+            atime = self.adb_wrapper.check_output_shell(
+                ["stat", "-c", "%X", yaml_fullpath]
+            ).strip()
+            mtime = self.adb_wrapper.check_output_shell(
+                ["stat", "-c", "%Y", yaml_fullpath]
+            ).strip()
+            ctime = self.adb_wrapper.check_output_shell(
+                ["stat", "-c", "%Z", yaml_fullpath]
+            ).strip()
             atime, mtime, ctime = int(atime), int(mtime), int(ctime)
             atime = datetime.datetime.fromtimestamp(atime)
             mtime = datetime.datetime.fromtimestamp(mtime)
             ctime = datetime.datetime.fromtimestamp(ctime)
-            session_info.append(dict(name=name, access_time = atime, creation_time = ctime, mod_time = mtime))
+            session_info.append(
+                dict(name=name, access_time=atime, creation_time=ctime, mod_time=mtime)
+            )
         # session_names.append("default")
         # TODO: no one can save a session named "default", or one may customize this behavior through swm pc/android config, somehow allow this to happen
         if print_formatted:
@@ -1909,14 +1920,14 @@ class SessionManager:
             "device": device,
             "pc": pc,
             # "windows": self._get_window_states(),
-            "windows": self.get_window_states_for_device_by_scrcpy_pid_files(),
+            "windows": self.get_window_states_for_device_by_scrcpy_pid_files(drop_pid=True),
         }
 
         self._save_session_data(session_name, session_data)
 
-    def get_window_states_for_device_by_scrcpy_pid_files(self):
+    def get_window_states_for_device_by_scrcpy_pid_files(self, drop_pid:bool):
         swm_info_list = (
-            self.swm.scrcpy_wrapper.get_running_swm_managed_scrcpy_info_list()
+            self.swm.scrcpy_wrapper.get_running_swm_managed_scrcpy_info_list(drop_pid=drop_pid)
         )
         return swm_info_list
 
@@ -1930,7 +1941,7 @@ class SessionManager:
         assert self.adb_wrapper.test_path_existance(sourcepath)
         assert not self.adb_wrapper.test_path_existance(targetpath)
         self.adb_wrapper.execute(["shell", "cp", sourcepath, targetpath])
-    
+
     def view(self, session_name: str):
         # retrieve and load session config
         session_data = self._load_session_data(session_name)
@@ -1938,6 +1949,7 @@ class SessionManager:
 
     def _load_session_data(self, session_name: str):
         import yaml
+
         session_path = self.get_session_path(session_name)
         assert self.adb_wrapper.test_path_existance(session_path)
         session_data = self.adb_wrapper.read_file(session_path)
@@ -1953,7 +1965,10 @@ class SessionManager:
             tmpfile_content = self.adb_wrapper.read_file(session_path)
         else:
             # prompt the user, "This session '%s' does not exist, do you want to create it?" % session_name for creation
-            prompt_text = "This session '%s' does not exist, do you want to create it?" % session_name
+            prompt_text = (
+                "This session '%s' does not exist, do you want to create it?"
+                % session_name
+            )
             choices = ["y", "n"]
             ans = prompt_for_option_selection(options=choices, prompt=prompt_text)
             if ans == "n":
@@ -2254,7 +2269,7 @@ for (UsageStats usageStats : stats.values()) {
 
         return ret
 
-    def enable_selinux_delayed(self, delay:float):
+    def enable_selinux_delayed(self, delay: float):
         import time
 
         def enable_selinux_runner():
@@ -2315,7 +2330,7 @@ for (UsageStats usageStats : stats.values()) {
         ret = split_lines(ret)
         return ret
 
-    def set_current_ime(self, ime_name:str):
+    def set_current_ime(self, ime_name: str):
         self.execute_su_cmd(f"settings put secure default_input_method {ime_name}")
 
     def check_output_su(self, cmd: str, **kwargs):
@@ -2377,7 +2392,7 @@ for (UsageStats usageStats : stats.values()) {
         data = parse_dumpsys_active_apps(output)
         return data
 
-    def check_app_existance(self, app_id:str):
+    def check_app_existance(self, app_id: str):
         apk_path = self.get_app_apk_path(app_id)
         if apk_path:
             return True
@@ -2427,14 +2442,14 @@ for (UsageStats usageStats : stats.values()) {
     def execute_shell(self, cmd_args: list[str], **kwargs):
         self.execute(["shell", *cmd_args], **kwargs)
 
-    def get_device_name(self, device_id:str):
+    def get_device_name(self, device_id: str):
         # self.set_device(device_id)
         output = self.check_output(
             ["shell", "settings", "get", "global", "device_name"], device_id=device_id
         ).strip()
         return output
 
-    def set_device_name(self, device_id:str, name:str):
+    def set_device_name(self, device_id: str, name: str):
         # self.set_device(device_id)
         self.execute_shell(
             ["settings", "put", "global", "device_name", name],
@@ -2458,10 +2473,10 @@ for (UsageStats usageStats : stats.values()) {
     def initialize(self):
         if self.online():
             self.create_swm_dir()
-        
-    def assert_absolute_path(self, path:str):
+
+    def assert_absolute_path(self, path: str):
         if not path.startswith("/"):
-            raise ValueError("Path must be absolute, given '%s'"% path)
+            raise ValueError("Path must be absolute, given '%s'" % path)
 
     def test_path_existance(self, remote_path: str):
         self.assert_absolute_path(remote_path)
@@ -2531,6 +2546,7 @@ for (UsageStats usageStats : stats.values()) {
 
     def write_file(self, remote_path: str, content: str):
         import tempfile
+
         self.assert_absolute_path(remote_path)
 
         """Write a string to a remote file."""
@@ -2661,7 +2677,7 @@ for (UsageStats usageStats : stats.values()) {
     def uninstall_app(self, app_id: str):
         self.execute(["uninstall", app_id])
 
-    def execute_java_code(self, java_code:str, sudo=False, capture_output=False):
+    def execute_java_code(self, java_code: str, sudo=False, capture_output=False):
         # TODO: Capture execution output, inplant success challenge such as simple arithmatics
         # TODO: Force airplane mode when using swm
         # print("Executing Java code:")
@@ -3173,7 +3189,10 @@ class ScrcpyWrapper:
         def ime_activator():
             # print("IME activator started")
             if self.ime_preference not in ["gboard", "adbkeyboard"]:
-                print("IME preference %s is not set to gboard or adbkeyboard" % self.ime_preference)
+                print(
+                    "IME preference %s is not set to gboard or adbkeyboard"
+                    % self.ime_preference
+                )
                 # print("IME Activator thread stopped")
                 return
             while True:
@@ -3748,7 +3767,7 @@ class ScrcpyWrapper:
         )
 
     def get_running_swm_managed_scrcpy_info_list(
-        self, remove_inactive=False, remove_app_id: Optional[str] = None
+        self, remove_inactive=False, remove_app_id: Optional[str] = None, drop_pid=False
     ):
         import psutil
         import json
@@ -3799,9 +3818,9 @@ class ScrcpyWrapper:
                             print(
                                 "Ineffective launch policy %s, ignoring" % launch_policy
                             )
-                # drop pid
-                if "pid" in data:
-                    del data["pid"]
+                if drop_pid:
+                    if "pid" in data:
+                        del data["pid"]
                 ret.append(data)
             else:
                 if remove_inactive:
