@@ -5,6 +5,7 @@
 <h1>Scrcpy Window Manager</h1>
 <p align="center">
 <a href="https://github.com/james4ever0/swm/blob/master/LICENSE"><img alt="License: WTFPL" src="https://img.shields.io/badge/license-UNLICENSE-green.svg?style=flat"></a>
+<a href="https://pypi.org/project/swm-android/"><img alt="PyPI" src="https://img.shields.io/pypi/v/swm-android"></a>
 <a href="https://deepwiki.com/James4Ever0/swm"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
 <a href="https://pepy.tech/projects/swm-android"><img src="https://static.pepy.tech/badge/swm-android" alt="PyPI Downloads"></a>
 <a href="https://github.com/james4ever0/swm"><img alt="Code style: black" src="https://img.shields.io/badge/code%20style-black-000000.svg"></a>
