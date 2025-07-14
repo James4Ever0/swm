@@ -3,7 +3,10 @@
 <img src="https://raw.githubusercontent.com/james4ever0/swm/main/logo/logo.png" alt="logo" width="200"/>
 
 <h1>Scrcpy Window Manager</h1>
+<p align="center">
 <a href="https://deepwiki.com/James4Ever0/swm"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
+<a href="https://pepy.tech/projects/swm-android"><img src="https://static.pepy.tech/badge/swm-android" alt="PyPI Downloads"></a>
+</p>
 </div>
 
 ## Use cases
