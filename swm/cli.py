@@ -3222,10 +3222,11 @@ class ScrcpyWrapper:
             )
             content_data = json.dumps(data, indent=4, ensure_ascii=False)
             f.write(content_data)
-            # TODO: write additional launch parameters here so we can create a session based on these files
-        # TODO: save this session "latest", make this configuable
+
         latest_session_name = "latest"
-        if self.is_device_connected(): self.swm.session_manager.save(latest_session_name) # you may also save on exit?
+        if self.is_device_connected():
+            if self.swm.config.session_autosave:
+                self.swm.session_manager.save(latest_session_name) # you may also save on exit?
         try:
             if ime_preference == "adbkeyboard":
                 self.start_sidecar_unicode_input(
@@ -3237,7 +3238,7 @@ class ScrcpyWrapper:
                     ...
                 print(
                     "<scrcpy stderr> %s" % captured_line
-                )  # now we check if this indicates some character we need to type in
+                )  # now we check if this indicates some characters we need to type in
                 if "WARN: Device disconnected" in captured_line:
                     setattr(proc, "device_disconnected", True)
                     break
@@ -3255,10 +3256,11 @@ class ScrcpyWrapper:
                     # TODO: hover the main display on the focused new window to show input candidates
                     # Note: gboard is useful for single display, but not good for multi display.
                 # [server] WARN: Could not inject char u+4f60
-                # TODO: use adb keyboard for pasting text from clipboard
+                # TODO: use adb keyboard for pasting text from clipboard, if the scrcpy clipboard api fails (can we know this from verbose log, or do we need to change the code?)
         finally:
             if self.is_device_connected():
-                self.swm.session_manager.save(latest_session_name)
+                if self.swm.config.session_autosave:
+                    self.swm.session_manager.save(latest_session_name)
             
             if lock:
                 try:
@@ -3271,8 +3273,6 @@ class ScrcpyWrapper:
                     pass
 
             ex_type, ex_value, ex_traceback = sys.exc_info()
-
-            # TODO: close the app when the main process is closed
 
             # check if the device is online.
             if getattr(proc, "device_disconnected", False):
@@ -3334,7 +3334,7 @@ class ScrcpyWrapper:
             )  # if at this point terminate_reason is 'unknown', probably it is killed using GUI or operating system
             setattr(proc, "terminate_success", terminate_success)
 
-            restart_reasons = self.config.restart_reasons  # TODO: make this configurable in swm baseconfig
+            restart_reasons = self.config.restart_reasons
 
             need_restart = not has_exception and (terminate_reason in restart_reasons)
 
@@ -3652,7 +3652,7 @@ class FzfWrapper:
 
             cmd = [self.fzf_path, "--layout=reverse"]
             if query:
-                # TODO: make this configurable with config file
+                # TODO: make "--bind one:accept" configurable with config file
                 cmd.extend(["--bind", "one:accept"])
                 cmd.extend(["--query", query])
             result = subprocess.run(
@@ -4017,7 +4017,7 @@ def create_default_config(cache_dir: str):
             "session_autosave": True,
             "android_session_storage_path": "/sdcard/.swm",
             "app_list_cache_update_interval": 60 * 60 * 24,  # 1 day
-            "session_autosave_interval": 60 * 60,  # 1 hour
+            # "session_autosave_interval": 60 * 60,  # 1 hour
             "app_list_cache_path": os.path.join(cache_dir, "app_list_cache.json"),
             "github_mirrors": [
                 "https://github.com",
@@ -4035,10 +4035,10 @@ def create_default_config(cache_dir: str):
                 "scrcpy": {"version": "3.3.1"},
                 "fzf": {"version": "0.62.0"},
                 "adbkeyboard": {"version": "2.0"},
-                "beeshell": {"version": "1.0.3"},  # TODO: figure out version of apks
+                "beeshell": {"version": "1.0.3"},
                 "beanshell": {
                     "version": "2.1.1"
-                },  # TODO: replace bsh gui with bsh cli (core) on github release, "java-jar.zip"
+                },
                 "aapt": {"version": "v0.2"},
                 "gboard": {"version": "15.5.8.766552071"},
             },
@@ -4115,7 +4115,6 @@ def main():
     default_cache_dir = os.path.expanduser("~/.swm")
 
     SWM_CACHE_DIR = os.environ.get("SWM_CACHE_DIR", default_cache_dir)
-    # TODO: Include environment variable documentation into help and error message
     os.makedirs(SWM_CACHE_DIR, exist_ok=True)
     CLI_SUGGESION_LIMIT = os.environ.get("SWM_CLI_SUGGESION_LIMIT", 1)
     CLI_SUGGESION_LIMIT = int(CLI_SUGGESION_LIMIT)
@@ -4286,7 +4285,6 @@ def main():
                 no_new_display = args["no-new-display"]
                 query = args["<query>"]
                 init_config = args["<init_config>"]
-                # TODO: search with query instead
                 app_id = swm.app_manager.resolve_app_query(query)
                 swm.app_manager.run(
                     app_id,  # type: ignore
