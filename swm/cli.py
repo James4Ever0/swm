@@ -462,7 +462,7 @@ def encode_base64_str(data: str):
 
 # TODO: Create an app config template repo, along with all other devices, pcs, for easy initialization
 
-# TODO: override extracted app icon with SCRCPY_ICON_PATH=<app_icon_path> or custom icon 
+# TODO: override extracted app icon with SCRCPY_ICON_PATH=<app_icon_path> or custom icon
 
 # TODO: not allowing exiting the app in the new display, or close the display if the app is exited, or reopen the app if exited
 
@@ -576,6 +576,7 @@ def select_editor():
 
 
 # TODO: download nano editor binary, use it to edit files despite the operate system
+
 
 # TODO: find a pure python text editor in textualize, or a package for this purpose, or write one
 def edit_file(filepath: str, editor_binpath: str):
@@ -798,7 +799,7 @@ class ADBStorage(Storage):
         self.write_cache = content
         if self.enable_read_cache:
             self.read_cache = content
-    
+
     def flush(self):
         if self.write_cache:
             self.adb_wrapper.write_file(self.filename, self.write_cache)
@@ -817,9 +818,9 @@ class SWMOnDeviceDatabase:
         assert type(adb_wrapper.device) == str
         self.device_id = adb_wrapper.device
         self._db = TinyDB(db_path, storage=self.storage)
-    
+
     def flush(self):
-        self._db.storage.flush() # type: ignore
+        self._db.storage.flush()  # type: ignore
 
     def write_previous_ime(self, previous_ime: str):
         PreviousIme = Query()
@@ -911,7 +912,9 @@ class SWM:
         self.java_manager = JavaManager(self)
         self.termux_manager = TermuxManager(self)
 
-    def healthcheck(self): # TODO: download x86 and x86_64 version of aapt, running on android
+    def healthcheck(
+        self,
+    ):  # TODO: download x86 and x86_64 version of aapt, running on android
         print("Warning: Healthcheck is not implemented yet.")
         basedir = self.config.cache_dir
         swm_partial_functional = ...
@@ -959,10 +962,17 @@ class SWM:
             print("User input:", user_input)
             input_args = user_input.strip().split()
             if input_args:
-                swm_args = parse_args(cli_suggestion_limit = 1, args=input_args, exit_on_error= False, print_help_on_error=False)
+                swm_args = parse_args(
+                    cli_suggestion_limit=1,
+                    args=input_args,
+                    exit_on_error=False,
+                    print_help_on_error=False,
+                    docopt_kwargs=dict(help=False),
+                )
                 if swm_args:
                     # execute a separate thread for new task, output displayed in tui window
-                    ...
+                    print("Parsed args:", swm_args)
+
     @property
     def local_icon_dir(self):
         assert self.current_device
@@ -1093,6 +1103,7 @@ def load_and_print_as_dataframe(
     list_of_dict, drop_fields={}, show=True, sort_columns=True
 ):
     import pandas
+
     if not list_of_dict:
         formatted_output = "Empty data"
     else:
@@ -1119,11 +1130,11 @@ class AppManager:
     def __init__(self, swm: SWM):
         self.swm = swm
         self.config = swm.config
-    
+
     def list_recent_apps(self, print_formatted=False):
 
         ret = self.swm.adb_wrapper.list_recent_apps()
-        
+
         if print_formatted:
             load_and_print_as_dataframe(ret)
         return ret
@@ -1480,17 +1491,17 @@ retrieve_app_icon: true
         app_config_path = self.get_app_config_path(app_name)
         with open(app_config_path, "w") as f:
             yaml.safe_dump(config, f)
-    
+
     def flush_device_db(self):
         assert self.swm.on_device_db
         self.swm.on_device_db.flush()
-            
+
     def update_all_app_last_used_time(self):
         if not hasattr(self, "all_app_last_used_time_updated"):
             all_app_usage_stats = self.swm.adb_wrapper.list_app_last_visible_time()
             for it in all_app_usage_stats:
                 app_id = it["app_id"]
-                last_visible_time = it['lastTimeVisible']
+                last_visible_time = it["lastTimeVisible"]
                 self.write_app_last_used_time_to_db(app_id, last_visible_time)
             self.flush_device_db()
             setattr(self, "all_app_last_used_time_updated", True)
@@ -1508,7 +1519,6 @@ retrieve_app_icon: true
 
         if update_cache:
             self.update_all_app_last_used_time()
-
 
         for it in package_list:
             package_id = it["id"]
@@ -1945,12 +1955,14 @@ class SessionManager:
 class DeviceManager:
     def __init__(self, swm: SWM):
         self.swm = swm
-        self.current_device_file = os.path.join(self.swm.config.cache_dir, "current_device.txt")
+        self.current_device_file = os.path.join(
+            self.swm.config.cache_dir, "current_device.txt"
+        )
 
     def list(self, print_formatted: bool = False, show_last_used=False):
         ret = self.swm.adb_wrapper.list_device_detailed()
         selected_device = self.read_current_device()
-        ret = [dict(selected=it['id'] == selected_device, **it) for it in ret]
+        ret = [dict(selected=it["id"] == selected_device, **it) for it in ret]
         if print_formatted:
             load_and_print_as_dataframe(ret)
         return ret
@@ -1963,10 +1975,8 @@ class DeviceManager:
 
     def search(self, query: Optional[str] = None):
         items = self.list(print_formatted=False)
-        items = ["%s %s" % (it['id'], it['name']) for it in items]
-        selected_item =  self.swm.fzf_wrapper.select_item(
-            items, query=query
-        )
+        items = ["%s %s" % (it["id"], it["name"]) for it in items]
+        selected_item = self.swm.fzf_wrapper.select_item(items, query=query)
         device_id = selected_item.split()[0]
         assert device_id
         return device_id
@@ -1984,14 +1994,17 @@ class DeviceManager:
         # TODO: save current device to file
         self.write_current_device(device_id)
         # self.swm.set_current_device(device_id)
-    def write_current_device(self, device_id:str):
-        with open(self.current_device_file, 'w+') as f:
+
+    def write_current_device(self, device_id: str):
+        with open(self.current_device_file, "w+") as f:
             f.write(device_id)
+
     def read_current_device(self):
         if os.path.isfile(self.current_device_file):
-            with open(self.current_device_file, 'r') as f:
+            with open(self.current_device_file, "r") as f:
                 ret = f.read().strip()
-                if ret: return ret
+                if ret:
+                    return ret
 
     def name(self, device_id: str, alias: str):
         self.swm.adb_wrapper.set_device_name(device_id, alias)
@@ -2005,28 +2018,35 @@ class AdbWrapper:
         self.remote_swm_dir = self.config.android_session_storage_path
         self.initialize()
         self.remote = self
-        
-    def install_script_if_missing_or_mismatch(self, script_content:str, remote_script_path:str):
-        installed = self.check_script_missing_or_mismatch(script_content = script_content, remote_script_path = remote_script_path)
+
+    def install_script_if_missing_or_mismatch(
+        self, script_content: str, remote_script_path: str
+    ):
+        installed = self.check_script_missing_or_mismatch(
+            script_content=script_content, remote_script_path=remote_script_path
+        )
         if not installed:
             print("Installing script")
-            self.write_file(
-                remote_path = remote_script_path, content = script_content
+            self.write_file(remote_path=remote_script_path, content=script_content)
+            ret = self.check_script_missing_or_mismatch(
+                script_content=script_content, remote_script_path=remote_script_path
             )
-            ret = self.check_script_missing_or_mismatch(script_content = script_content, remote_script_path = remote_script_path)
             if ret:
                 print("Script installed successfully at %s" % remote_script_path)
                 return ret
             else:
-                raise ValueError("Script installation at %s failed" % remote_script_path)
+                raise ValueError(
+                    "Script installation at %s failed" % remote_script_path
+                )
         else:
             print("Script already installed at %s" % remote_script_path)
             return True
 
-    def check_script_missing_or_mismatch(self, script_content:str, remote_script_path:str):
-        script_exists = self.test_path_existance_su(
-           remote_path = remote_script_path)
-        sha256_script = sha256sum(text = script_content)
+    def check_script_missing_or_mismatch(
+        self, script_content: str, remote_script_path: str
+    ):
+        script_exists = self.test_path_existance_su(remote_path=remote_script_path)
+        sha256_script = sha256sum(text=script_content)
         if script_exists:
             sha256_device_script = self.sha256sum(path=remote_script_path)
             if sha256_script == sha256_device_script:
@@ -2037,13 +2057,12 @@ class AdbWrapper:
                     % (sha256_device_script, sha256_script)
                 )
         else:
-            print(
-                "Warning: script '%s' does not exist."
-                % remote_script_path
-            )
+            print("Warning: script '%s' does not exist." % remote_script_path)
         return False
+
     def list_app_last_visible_time(self):
         import datetime
+
         java_code = """
 import android.content.Context;
 import java.util.Calendar;
@@ -2084,10 +2103,15 @@ for (UsageStats usageStats : stats.values()) {
         for it in lines:
             if it.startswith("package="):
                 app_id, lastTimeVisible = it.split(" ")
-                app_id, lastTimeVisible = app_id.split("=")[-1], lastTimeVisible.split("=")[-1]
+                app_id, lastTimeVisible = (
+                    app_id.split("=")[-1],
+                    lastTimeVisible.split("=")[-1],
+                )
                 lastTimeVisible = int(lastTimeVisible)
-                lastTimeVisible = datetime.datetime.fromtimestamp(lastTimeVisible/1000)
-                ret.append(dict(app_id=app_id, lastTimeVisible = lastTimeVisible))
+                lastTimeVisible = datetime.datetime.fromtimestamp(
+                    lastTimeVisible / 1000
+                )
+                ret.append(dict(app_id=app_id, lastTimeVisible=lastTimeVisible))
         return ret
 
     def disable_selinux(self):
@@ -2113,7 +2137,7 @@ for (UsageStats usageStats : stats.values()) {
                     ret_it["app_id"] = app_id
                     # we need the app name
                     app_name = self.get_app_name(app_id)
-                    ret_it['name'] = app_name
+                    ret_it["name"] = app_name
                 elif kv.startswith("visible="):
                     visible = None
                     if kv.endswith("=true"):
@@ -2123,7 +2147,7 @@ for (UsageStats usageStats : stats.values()) {
                     if visible is not None:
                         ret_it["visible"] = visible
             ret.append(ret_it)
-        
+
         return ret
 
     def enable_selinux_delayed(self, delay):
@@ -2194,6 +2218,7 @@ for (UsageStats usageStats : stats.values()) {
 
     def check_output_shell(self, cmd_args: list[str], **kwargs):
         return self.check_output(["shell"] + cmd_args, **kwargs)
+
     def get_display_density(self, display_id: int):
         # adb shell wm density -d <display_id>
         # first, it must exist
@@ -2923,7 +2948,8 @@ class ScrcpyWrapper:
         elif self.device:
             cmd.extend(["-s", self.device])
         cmd.extend(args)
-        if basic: return cmd
+        if basic:
+            return cmd
         # TODO: display fps when loglevel is verbose
         # cmd.extend(['--print-fps'])
         # <scrcpy stdout> INFO: 61 fps
@@ -2969,7 +2995,7 @@ class ScrcpyWrapper:
         spawn_and_detach_process(cmd)
 
     def check_output(self, args: List[str], basic=False) -> str:
-        cmd = self._build_cmd(args, basic=basic) #; print(cmd)
+        cmd = self._build_cmd(args, basic=basic)  # ; print(cmd)
         output = subprocess.check_output(cmd).decode("utf-8")
         return output
 
@@ -3158,7 +3184,7 @@ class ScrcpyWrapper:
         # self.execute(args)
         unicode_char_warning = "[server] WARN: Could not inject char"
         cmd = self._build_cmd(args)
-        
+
         _env = os.environ.copy()
         _env.update(env)
 
@@ -3166,7 +3192,6 @@ class ScrcpyWrapper:
         if "SCRCPY_ICON_PATH" not in _env:
             swm_icon_path = self.swm.swm_icon_path
             _env["SCRCPY_ICON_PATH"] = swm_icon_path
-
 
         print("Acquiring lock")
         lock = self.acquire_app_launch_lock()
@@ -3185,7 +3210,6 @@ class ScrcpyWrapper:
         proc_pid = proc.pid
 
         print("Scrcpy PID:", proc_pid)
-
 
         self.swm.ime_manager.run_previous_ime_restoration_script()  # BUG: no multicursor across multiple tab of the same file in vscode
 
@@ -3221,7 +3245,7 @@ class ScrcpyWrapper:
 
         swm_scrcpy_proc_pid_path = self.generate_swm_scrcpy_proc_pid_path()
         # lock = None
-    
+
         self.start_sidecar_app_launch_filelock_releaser(proc=proc, lock=lock)
         # write the pid to the path
         with open(swm_scrcpy_proc_pid_path, "w") as f:
@@ -3234,7 +3258,9 @@ class ScrcpyWrapper:
         latest_session_name = "latest"
         if self.is_device_connected():
             if self.swm.config.session_autosave:
-                self.swm.session_manager.save(latest_session_name) # you may also save on exit?
+                self.swm.session_manager.save(
+                    latest_session_name
+                )  # you may also save on exit?
         try:
             if ime_preference == "adbkeyboard":
                 self.start_sidecar_unicode_input(
@@ -3269,7 +3295,7 @@ class ScrcpyWrapper:
             if self.is_device_connected():
                 if self.swm.config.session_autosave:
                     self.swm.session_manager.save(latest_session_name)
-            
+
             if lock:
                 try:
                     lock.release()
@@ -3685,14 +3711,16 @@ class ImeManager:
     def run_previous_ime_restoration_script(self):
         print("Warning: run_previous_ime_restoration_script is not implemented yet")
         installation_path = self.install_previous_ime_restoration_script()
-        cmd = ["su", '-c', "sh", "-c", ""]
+        cmd = ["su", "-c", "sh", "-c", ""]
         self.swm.adb_wrapper.execute_shell(cmd)
 
     def install_previous_ime_restoration_script(self):
         print("Warning: install_previous_ime_restoration_script is not implemented yet")
         installation_path = ""
         script_content = """"""
-        self.swm.adb_wrapper.install_script_if_missing_or_mismatch(script_content = script_content, remote_script_path = installation_path)
+        self.swm.adb_wrapper.install_script_if_missing_or_mismatch(
+            script_content=script_content, remote_script_path=installation_path
+        )
         # just write the content to the path, if sha256 mismatch or file missing
         # execute this method everytime run a new app
         # run it on android as root
@@ -3791,12 +3819,14 @@ class ImeManager:
 
 class WirelessManager: ...
 
+
 # for mounting file
 class FileManager:
-    def __init__(self, swm:SWM):
+    def __init__(self, swm: SWM):
         self.swm = swm
-    def mount_from_device_to_pc(self, device_path:str, pc_path:str):...
-    def mount_from_pc_to_device(self, pc_path:str, device_path:str):...
+
+    def mount_from_device_to_pc(self, device_path: str, pc_path: str): ...
+    def mount_from_pc_to_device(self, pc_path: str, device_path: str): ...
 class JavaManager:
     def __init__(self, swm: SWM):
         self.swm = swm
@@ -3864,6 +3894,7 @@ class JavaManager:
 
 # you can just run setenforce 0 to bypass selinux restrictions and may help with tmux permission issues, but dangerous
 
+
 # TODO: warn the user that tmux may not work properly (permission denied from android termux app if the server is created using swm termux shell)
 class TermuxManager:
     def __init__(self, swm: SWM):
@@ -3916,10 +3947,14 @@ exec "$SHELL" -li $@
                 % self.path_init_script
             )
         return False
+
     def install_termux_init_script(self):
         script_content = self.content_init_script
         remote_script_path = self.path_init_script
-        self.swm.adb_wrapper.install_script_if_missing_or_mismatch(script_content = script_content, remote_script_path = remote_script_path)
+        self.swm.adb_wrapper.install_script_if_missing_or_mismatch(
+            script_content=script_content, remote_script_path=remote_script_path
+        )
+
     def _install_termux_init_script(self):
         installed = self.check_termux_init_script_installed()
         if not installed:
@@ -4044,9 +4079,7 @@ def create_default_config(cache_dir: str):
                 "fzf": {"version": "0.62.0"},
                 "adbkeyboard": {"version": "2.0"},
                 "beeshell": {"version": "1.0.3"},
-                "beanshell": {
-                    "version": "2.1.1"
-                },
+                "beanshell": {"version": "2.1.1"},
                 "aapt": {"version": "v0.2"},
                 "gboard": {"version": "15.5.8.766552071"},
             },
@@ -4089,31 +4122,50 @@ def override_system_excepthook(
     sys.excepthook = custom_excepthook
 
 
-def parse_args(cli_suggestion_limit: int, args:list[str]= [], exit_on_error=True, print_help_on_error=True, show_suggestion_on_error=True):
+def parse_args(
+    cli_suggestion_limit: int,
+    args: list[str] = [],
+    exit_on_error=True,
+    print_help_on_error=True,
+    show_suggestion_on_error=True,
+    docopt_kwargs={},
+):
     from docopt import docopt, DocoptExit
     import sys
 
     try:
         if args:
-            ret = docopt(__doc__, args=args, version=f"SWM {__version__}", options_first=True)
+            ret = docopt(
+                __doc__,
+                argv=args,
+                version=f"SWM {__version__}",
+                options_first=True,
+                **docopt_kwargs,
+            )
         else:
-            ret= docopt(__doc__, version=f"SWM {__version__}", options_first=True)
+            ret = docopt(
+                __doc__,
+                version=f"SWM {__version__}",
+                options_first=True,
+                **docopt_kwargs,
+            )
         return ret
     except DocoptExit:
-        
+
         if print_help_on_error:
             # print the docstring
             print(DOCSTRING)
         # must be something wrong with the arguments
         if show_suggestion_on_error:
             if args:
-                argv=args
+                argv = args
             else:
                 argv = sys.argv
             user_input = "swm " + (" ".join(argv[1:]))
             show_suggestion_on_wrong_command(user_input, limit=cli_suggestion_limit)
         # TODO: configure "limit" in swm config yaml
-    if exit_on_error: exit(1)
+    if exit_on_error:
+        exit(1)
 
 
 def main():
@@ -4236,7 +4288,7 @@ def main():
 
         # Handle device selection
         cli_device = args["--device"]
-        #config_device = config.device
+        # config_device = config.device
         config_device = swm.device_manager.read_current_device()
         if cli_device is not None:
             default_device = cli_device
@@ -4256,7 +4308,7 @@ def main():
             raise NoDeviceError("No available device")
 
         if args["app"]:
-            if args['recent']:
+            if args["recent"]:
                 swm.app_manager.list_recent_apps(print_formatted=True)
             elif args["search"]:
                 app_id = swm.app_manager.search(index=args["index"])
@@ -4288,7 +4340,9 @@ def main():
                 if limit is None:
                     limit = 10
                 limit = int(limit)
-                swm.app_manager.list(most_used=limit, print_formatted=True, update_last_used=True)
+                swm.app_manager.list(
+                    most_used=limit, print_formatted=True, update_last_used=True
+                )
             elif args["run"]:
                 no_new_display = args["no-new-display"]
                 query = args["<query>"]
