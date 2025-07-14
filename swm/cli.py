@@ -410,6 +410,7 @@ def download_initial_binaries(basedir: str, mirror_list: list[str], force=False)
         "android-binaries.zip",
         "java-jar.zip",
         "apk.zip",
+        "logo.zip",
         "pc-binaries-%s.zip" % pc_os_arch,
     ]
     # now download and unzip all zip files to target directory
@@ -883,6 +884,7 @@ class SWM:
     def __init__(self, config: omegaconf.DictConfig):
         self.config = config
         self.cache_dir = config.cache_dir
+        self.swm_icon_path = os.path.join(self.cache_dir, "icon", "icon.png")
         self.bin_dir = os.path.join(self.cache_dir, "bin")
         os.makedirs(self.bin_dir, exist_ok=True)
 
@@ -3156,8 +3158,14 @@ class ScrcpyWrapper:
         # self.execute(args)
         unicode_char_warning = "[server] WARN: Could not inject char"
         cmd = self._build_cmd(args)
+        
         _env = os.environ.copy()
         _env.update(env)
+
+        # TODO: upload logo.zip
+        if "SCRCPY_ICON_PATH" not in _env:
+            swm_icon_path = self.swm.swm_icon_path
+            _env["SCRCPY_ICON_PATH"] = swm_icon_path
 
 
         print("Acquiring lock")
