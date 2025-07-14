@@ -1903,7 +1903,7 @@ class SessionManager:
         # Get current window positions and app states
         pc = self.get_pc_info()
         session_data = {
-            "timestamp": time.time(),
+            "timestamp": int(time.time()),
             "device": device,
             "pc": pc,
             # "windows": self._get_window_states(),
@@ -1933,7 +1933,8 @@ class SessionManager:
         import tempfile
 
         session_path = self.get_session_path(session_name)
-        if self.adb_wrapper.test_path_existance(session_name):
+        # print("Session path:", session_path)
+        if self.adb_wrapper.test_path_existance(session_path):
             tmpfile_content = self.adb_wrapper.read_file(session_path)
         else:
             # prompt the user, "This session '%s' does not exist, do you want to create it?" % session_name for creation
@@ -2437,15 +2438,24 @@ for (UsageStats usageStats : stats.values()) {
     def initialize(self):
         if self.online():
             self.create_swm_dir()
+        
+    def assert_absolute_path(self, remote_path:str):
+        if not remote_path.startswith("/"):
+            raise ValueError("remote_path must be absolute, given '%s'"% remote_path)
 
     def test_path_existance(self, remote_path: str):
+        self.assert_absolute_path(remote_path)
+
         cmd = ["shell", "test", "-e", remote_path]
         result = self.execute(cmd, check=False)
+        # print("Return code:", result.returncode)
         if result.returncode == 0:
             return True
         return False
 
     def test_path_existance_su(self, remote_path: str):
+        self.assert_absolute_path(remote_path)
+
         cmd = "test -e '%s'" % remote_path
         result = self.execute_su_cmd(cmd, check=False)
         if result.returncode == 0:
@@ -3746,6 +3756,9 @@ class ScrcpyWrapper:
                             print(
                                 "Ineffective launch policy %s, ignoring" % launch_policy
                             )
+                # drop pid
+                if "pid" in data:
+                    del data["pid"]
                 ret.append(data)
             else:
                 if remove_inactive:
