@@ -65,6 +65,8 @@ Environment variables:
   FZF           Path to FZF binary (overrides SWM managed FZF)
 """
 
+# TODO: add timeout on all subprocess commands, except for those interactive or indefinite ones
+
 # TODO: check gboard version, include gboard apk in our binary release, install gboard as our official companion input method app in uhid mode
 
 # TODO: blacklist commands, change execution preferences, configs, commandline help based on healthcheck result per device
@@ -1850,15 +1852,32 @@ class SessionManager:
         return self.swm.fzf_wrapper.select_item(sessions, query=query)
 
     def list(self, show_last_used=False, print_formatted=False) -> List[str]:
-        session_json_paths = [
-            f for f in self.adb_wrapper.listdir(self.session_dir) if f.endswith(".json")
+        import datetime
+        session_yaml_paths = [
+            f for f in self.adb_wrapper.listdir(self.session_dir) if f.endswith(".yaml")
         ]
-        session_names = [os.path.splitext(it)[0] for it in session_json_paths]
+        session_names = []
+
+        session_info = []
+        for it in session_yaml_paths:
+            name = os.path.splitext(it)[0]
+            session_names.append(name)
+            yaml_fullpath = os.path.join(self.session_dir, it)
+
+            atime = self.adb_wrapper.check_output_shell(["stat", '-c', '%X', yaml_fullpath]).strip()
+            mtime = self.adb_wrapper.check_output_shell(["stat", '-c', '%Y', yaml_fullpath]).strip()
+            ctime = self.adb_wrapper.check_output_shell(["stat", '-c', '%Z', yaml_fullpath]).strip()
+            atime, mtime, ctime = int(atime), int(mtime), int(ctime)
+            atime = datetime.datetime.fromtimestamp(atime)
+            mtime = datetime.datetime.fromtimestamp(mtime)
+            ctime = datetime.datetime.fromtimestamp(ctime)
+            session_info.append(dict(name=name, access_time = atime, creation_time = ctime, mod_time = mtime))
         # session_names.append("default")
         # TODO: no one can save a session named "default", or one may customize this behavior through swm pc/android config, somehow allow this to happen
         if print_formatted:
-            print("Session saved on device %s:" % self.adb_wrapper.device)
-            print("\t" + ("\n\t".join(session_names)))
+            print("Sessions saved on device %s:" % self.adb_wrapper.device)
+            load_and_print_as_dataframe(session_info)
+            # print("\t" + ("\n\t".join(session_names)))
         return session_names
 
     def get_pc_info(self):
