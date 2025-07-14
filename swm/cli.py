@@ -190,6 +190,7 @@ def get_python_arch():
                 return "aarch64"
 
 def check_python_and_system_arch_consistent():
+    # TODO: check if platform.machine() is the same as platform.processor on macos, if yes, use it to detect rosetta
     python_arch = get_python_arch()
     _, system_arch = get_system_and_architecture()
     if python_arch:
@@ -931,7 +932,7 @@ class SWM:
         if os.path.exists(swm_icon_path):
             self.swm_icon_path =swm_icon_path
         else:
-            print("Warning: SWM icon does not exist at: %s" % swm_icon_path)
+            print("Warning: SWM icon file does not exist at: %s" % swm_icon_path)
             self.swm_icon_path = ""
         self.bin_dir = os.path.join(self.cache_dir, "bin")
         os.makedirs(self.bin_dir, exist_ok=True)
@@ -1935,6 +1936,13 @@ class SessionManager:
         if self.adb_wrapper.test_path_existance(session_name):
             tmpfile_content = self.adb_wrapper.read_file(session_path)
         else:
+            # prompt the user, "This session '%s' does not exist, do you want to create it?" % session_name for creation
+            prompt_text = "This session '%s' does not exist, do you want to create it?" % session_name
+            choices = ["y", "n"]
+            ans = prompt_for_option_selection(options=choices, prompt=prompt_text)
+            if ans == "n":
+                print("User declined to create the session '%s'" % session_name)
+                return
             tmpfile_content = self.template_session_config
 
         with tempfile.NamedTemporaryFile(mode="w+") as tmpfile:
@@ -4555,6 +4563,11 @@ def main():
                     args["<query>"]
                 )
                 swm.session_manager.delete(session_name)
+            elif args["edit"]:
+                session_name = swm.session_manager.resolve_session_query(
+                    args["<query>"]
+                )
+                swm.session_manager.edit(session_name)
             else:
                 ...  # Implement other device specific commands
 
