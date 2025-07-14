@@ -4,8 +4,10 @@
 
 <h1>Scrcpy Window Manager</h1>
 <p align="center">
+<a href="https://github.com/james4ever0/swm/blob/master/LICENSE"><img alt="License: WTFPL" src="https://img.shields.io/badge/license-UNLICENSE-green.svg?style=flat"></a>
 <a href="https://deepwiki.com/James4Ever0/swm"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
 <a href="https://pepy.tech/projects/swm-android"><img src="https://static.pepy.tech/badge/swm-android" alt="PyPI Downloads"></a>
+<a href="https://github.com/james4ever0/swm"><img alt="Code style: black" src="https://img.shields.io/badge/code%20style-black-000000.svg"></a>
 </p>
 </div>
 
@@ -57,6 +59,7 @@ Usage:
   swm [options] healthcheck
   swm [options] adb [<adb_args>...]
   swm [options] scrcpy [<scrcpy_args>...]
+  swm [options] app recent
   swm [options] app run <query> [no-new-display] [<init_config>]
   swm [options] app list [with-last-used-time] [with-type] [update]
   swm [options] app search [with-type] [index]
@@ -65,12 +68,14 @@ Usage:
   swm [options] app config list
   swm [options] app config (show|edit) <config_name>
   swm [options] app config copy <source_name> <target_name>
+  swm [options] mount <device_path> <host_path>
+  swm [options] mount reverse <host_path> <device_path>
   swm [options] ime list
   swm [options] ime (switch|activate|deactivate) <query>
   swm [options] ime search
   swm [options] ime switch-to-previous
   swm [options] java run <script_path>
-  swm [options] java shell
+  swm [options] java shell [<shell_args>...]
   swm [options] termux run <script_path>
   swm [options] termux exec <executable>
   swm [options] termux shell [<shell_args>...]
