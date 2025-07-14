@@ -3,6 +3,7 @@
 <img src="https://raw.githubusercontent.com/james4ever0/swm/main/logo/logo.png" alt="logo" width="200"/>
 
 <h1>Scrcpy Window Manager</h1>
+<a href="https://deepwiki.com/James4Ever0/swm"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
 </div>
 
 ## Use cases
