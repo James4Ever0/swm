@@ -33,7 +33,7 @@ Usage:
   swm [options] session restore [session_name]
   swm [options] session delete <query>
   swm [options] session edit <query>
-  swm [options] session view <query>
+  swm [options] session view (plain|brief) <query>
   swm [options] session save <session_name>
   swm [options] session copy <source> <target>
   swm [options] device list [last-used]
@@ -938,7 +938,7 @@ class SWM:
         if os.path.exists(swm_icon_path):
             self.swm_icon_path = swm_icon_path
         else:
-            print("Warning: SWM icon file does not exist at: %s" % swm_icon_path)
+            print("Warning: SWM icon file does not exist at '%s'" % swm_icon_path)
             self.swm_icon_path = ""
         self.bin_dir = os.path.join(self.cache_dir, "bin")
         os.makedirs(self.bin_dir, exist_ok=True)
@@ -1942,10 +1942,19 @@ class SessionManager:
         assert not self.adb_wrapper.test_path_existance(targetpath)
         self.adb_wrapper.execute(["shell", "cp", sourcepath, targetpath])
 
-    def view(self, session_name: str):
+    def view(self, session_name: str, style = "plain"):
+        import yaml
         # retrieve and load session config
         session_data = self._load_session_data(session_name)
         # format output
+        if style == "plain":
+            format_output = yaml.dump(session_data, default_flow_style=False)
+        elif style == "brief":
+            print("Warning: brief style is not implemented yet")
+        else:
+            raise NotImplementedError("Unsupported style: " + style)
+        print(format_output)
+        return format_output
 
     def _load_session_data(self, session_name: str):
         import yaml
@@ -1954,6 +1963,7 @@ class SessionManager:
         assert self.adb_wrapper.test_path_existance(session_path)
         session_data = self.adb_wrapper.read_file(session_path)
         session_data = yaml.safe_load(session_data)
+        assert type(session_data) == dict
         return session_data
 
     def edit(self, session_name: str):
@@ -4648,7 +4658,13 @@ def main():
                 session_name = swm.session_manager.resolve_session_query(
                     args["<query>"]
                 )
-                swm.session_manager.view(session_name)
+                if args["plain"]:
+                    style="plain"
+                elif args['brief']:
+                    style="brief"
+                else:
+                    raise ValueError("Please specify a style")
+                swm.session_manager.view(session_name, style=style)
             else:
                 ...  # Implement other device specific commands
 
