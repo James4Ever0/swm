@@ -9,6 +9,7 @@ Usage:
   swm [options] adb [<adb_args>...]
   swm [options] scrcpy [<scrcpy_args>...]
   swm [options] app recent
+  swm [options] app terminate <query>
   swm [options] app run <query> [no-new-display] [<init_config>]
   swm [options] app list [with-last-used-time] [with-type] [update]
   swm [options] app search [with-type] [index]
@@ -1196,6 +1197,10 @@ class AppManager:
     def __init__(self, swm: SWM):
         self.swm = swm
         self.config = swm.config
+    
+    def terminate(self, app_id: str):
+        cmd = f"am force-stop {app_id}".split()
+        self.swm.adb_wrapper.execute_shell(cmd)
 
     def list_recent_apps(self, print_formatted=False):
 
@@ -1227,6 +1232,7 @@ class AppManager:
         if not self.check_app_existance(query):
             # this is definitely a query
             ret = self.search(index=False, query=query)
+            assert ret
         return ret
 
     # let's mark it rooted device only.
@@ -1950,7 +1956,12 @@ class SessionManager:
         if style == "plain":
             format_output = yaml.dump(session_data, default_flow_style=False)
         elif style == "brief":
-            print("Warning: brief style is not implemented yet")
+            pc_hostname = ...
+            device_name = ...
+            windows = ...
+            brief_data = dict(pc_hostname=pc_hostname, device_name=device_name,windows=windows)
+            format_output = yaml.dump(brief_data, default_flow_style=False)
+
         else:
             raise NotImplementedError("Unsupported style: " + style)
         print(format_output)
@@ -2380,6 +2391,10 @@ for (UsageStats usageStats : stats.values()) {
         ret = parse_display_focus(lines)
         # print("Ret:", ret)
         return ret
+
+    def reset_display(self, display_id:int):
+        cmd = "wm reset -d %s" % display_id
+        self.execute_su_cmd(cmd)
 
     def check_app_is_foreground(self, app_id: str):
         # convert the binary output from "wm dump-visible-window-views" into ascii byte by byte, those not viewable into "."
@@ -3059,6 +3074,7 @@ class ScrcpyWrapper:
         self.adb_wrapper.write_file(self.app_list_cache_path, content)
 
     def get_active_display_ids(self):
+        # TODO: implement a cli command or config option to reset display using su -c "wm reset -d $DISPLAY_ID"
         # scrcpy --list-displays
         output = self.check_output(["--list-displays"])
         output_lines = output.splitlines()
@@ -4358,6 +4374,7 @@ def main():
     CLI_SUGGESION_LIMIT = int(CLI_SUGGESION_LIMIT)
     # Parse CLI arguments
     args = parse_args(CLI_SUGGESION_LIMIT)
+    assert args
 
     config_path = args["--config"]
     if config_path:
@@ -4487,7 +4504,11 @@ def main():
             raise NoDeviceError("No available device")
 
         if args["app"]:
-            if args["recent"]:
+            if args["terminate"]:
+                query = args["<query>"]
+                app_id = swm.app_manager.resolve_app_query(query)
+                swm.app_manager.terminate(app_id)
+            elif args["recent"]:
                 swm.app_manager.list_recent_apps(print_formatted=True)
             elif args["search"]:
                 app_id = swm.app_manager.search(index=args["index"])
