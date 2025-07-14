@@ -4057,7 +4057,7 @@ exec "$SHELL" -li $@
     def install_termux_init_script(self):
         script_content = self.content_init_script
         remote_script_path = self.path_init_script
-        self.swm.adb_wrapper.install_script_if_missing_or_mismatch(
+        return self.swm.adb_wrapper.install_script_if_missing_or_mismatch(
             script_content=script_content, remote_script_path=remote_script_path
         )
 
