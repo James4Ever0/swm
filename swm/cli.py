@@ -156,6 +156,46 @@ __version__ = "0.1.0"
 NO_DEVICE_ID = "NO_DEVICE_ID"
 
 
+def check_is_rosetta() -> bool:
+    import sys
+    if sys.platform != "darwin":
+        return False
+    if platform.machine() == "arm64":
+        return False
+    
+    try:
+        # Get process architecture using `ps` and `lipo`
+        pid = os.getpid()
+        cmd = f"ps -o comm= -p {pid} | xargs lipo -archs"
+        output = subprocess.check_output(cmd, shell=True, text=True)
+        return "x86_64" in output and "arm64" not in output
+    except subprocess.CalledProcessError:
+        return False
+
+def get_python_arch():
+    import sys
+    import shutil
+    python_exec = sys.executable
+    file_exec = shutil.which("file")
+    if file_exec:
+        cmd = [file_exec, python_exec]
+        ret = subprocess.run(cmd, capture_output=True, text=True)
+        if ret.returncode == 0:
+            output = ret.stdout
+            if "x86_64" in output:
+                return "x86_64"
+            elif "aarch64" in output:
+                return "aarch64"
+
+def check_python_and_system_arch_consistent():
+    python_arch = get_python_arch()
+    _, system_arch = get_system_and_architecture()
+    if python_arch:
+        ret = python_arch == system_arch
+    else:
+        ret = True # assume arch matching
+    return ret
+
 def sha256sum(text: str):
     import hashlib
 
@@ -885,7 +925,12 @@ class SWM:
     def __init__(self, config: omegaconf.DictConfig):
         self.config = config
         self.cache_dir = config.cache_dir
-        self.swm_icon_path = os.path.join(self.cache_dir, "icon", "icon.png")
+        swm_icon_path = os.path.join(self.cache_dir, "icon", "icon.png")
+        if os.path.exists(swm_icon_path):
+            self.swm_icon_path =swm_icon_path
+        else:
+            print("Warning: SWM icon does not exist at: %s" % swm_icon_path)
+            self.swm_icon_path = ""
         self.bin_dir = os.path.join(self.cache_dir, "bin")
         os.makedirs(self.bin_dir, exist_ok=True)
 
@@ -919,6 +964,20 @@ class SWM:
         basedir = self.config.cache_dir
         swm_partial_functional = ...
         swm_fully_functional = ...
+
+        # check for python arch mismatch, for example, python arch being x86 but cpu arch being aarch64
+
+        python_and_system_arch_consistent = check_python_and_system_arch_consistent()
+
+        print("Python and system arch mismatch:", not python_and_system_arch_consistent)
+
+
+        # common in macbook systems
+        python_is_rosetta = check_is_rosetta()
+        print("Python is running on rosetta:", python_is_rosetta)
+
+
+
         # check init status
         swm_init_status = check_init_complete(basedir)
         if swm_init_status:
@@ -3032,7 +3091,10 @@ class ScrcpyWrapper:
 
         # proc_pid = proc.pid
         def ime_activator():
+            # print("IME activator started")
             if self.ime_preference not in ["gboard", "adbkeyboard"]:
+                print("IME preference %s is not set to gboard or adbkeyboard" % self.ime_preference)
+                # print("IME Activator thread stopped")
                 return
             while True:
                 time.sleep(interval)
@@ -3058,6 +3120,7 @@ class ScrcpyWrapper:
                         self.adb_wrapper.enable_and_set_gboard()
                     elif self.ime_preference == "adbkeyboard":
                         self.adb_wrapper.enable_and_set_adb_keyboard()
+            # print("IME Activator thread stopped")
 
         start_daemon_thread(target=ime_activator)
 
@@ -3191,7 +3254,8 @@ class ScrcpyWrapper:
         # TODO: upload logo.zip
         if "SCRCPY_ICON_PATH" not in _env:
             swm_icon_path = self.swm.swm_icon_path
-            _env["SCRCPY_ICON_PATH"] = swm_icon_path
+            if swm_icon_path:
+                _env["SCRCPY_ICON_PATH"] = swm_icon_path
 
         print("Acquiring lock")
         lock = self.acquire_app_launch_lock()
@@ -3710,12 +3774,14 @@ class ImeManager:
 
     def run_previous_ime_restoration_script(self):
         print("Warning: run_previous_ime_restoration_script is not implemented yet")
+        return
         installation_path = self.install_previous_ime_restoration_script()
         cmd = ["su", "-c", "sh", "-c", ""]
         self.swm.adb_wrapper.execute_shell(cmd)
 
     def install_previous_ime_restoration_script(self):
         print("Warning: install_previous_ime_restoration_script is not implemented yet")
+        return
         installation_path = ""
         script_content = """"""
         self.swm.adb_wrapper.install_script_if_missing_or_mismatch(
