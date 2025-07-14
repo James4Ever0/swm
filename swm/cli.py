@@ -949,8 +949,9 @@ class SWM:
         self.fzf_wrapper = FzfWrapper(self.fzf)
 
         # Initialize attributes
-        self.current_device = None
-        self.on_device_db = None
+        self.current_device:Optional[str] = None
+        self.current_device_name :Optional[str]= None
+        self.on_device_db :Optional[SWMOnDeviceDatabase]= None
 
         # Initialize managers
         self.app_manager = AppManager(self)
@@ -4450,6 +4451,7 @@ def main():
                 current_device
             )  # could fail if status is not "device", such as "fastboot"
             print("Current device name:", device_name)
+            swm.current_device_name = device_name
             swm.set_current_device(current_device)
             swm.load_swm_on_device_db()
         else:
