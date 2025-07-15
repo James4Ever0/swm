@@ -1936,7 +1936,7 @@ class SessionManager:
         for it in windows:
             pid=it["pid"]
             del it["pid"]
-          it["window_transient_props"]=get_window_size_and_position_info_by_pid(pid)
+            it["window_transient_props"]=self.get_window_size_and_position_info_by_pid(pid)
         session_data = {
             "timestamp": timestamp,
             "device": device,
@@ -3343,6 +3343,9 @@ class ScrcpyWrapper:
         import json
         import sys
 
+        previous_ime = self.get_previous_ime()
+        print("Previous IME:", previous_ime)
+
         # import time
         try:
             self.cleanup_scrcpy_proc_pid_files(app_id=package_name)
@@ -3436,7 +3439,7 @@ class ScrcpyWrapper:
         else:
             setattr(proc, "display_id", 0)
         assert proc.stderr
-        previous_ime = self.get_previous_ime()
+
         if not previous_ime:
             print("Warning: Previous IME unrecognized")
 
@@ -3758,7 +3761,7 @@ class ScrcpyWrapper:
         #return self.swm.on_device_db.read_previous_ime()
 
     def store_previous_ime_to_device(self, previous_ime: str):
-          self.swm.adb_wrapper.write_file(remote_path='/data/local/tmp/previous_ime.txt',previous_ime)
+        self.swm.adb_wrapper.write_file(remote_path='/data/local/tmp/previous_ime.txt',content=previous_ime)
         #assert self.swm.on_device_db
         #self.swm.on_device_db.write_previous_ime(previous_ime)
 
@@ -3947,19 +3950,22 @@ class ReplManager:
 class ImeManager:
     def __init__(self, swm: SWM):
         self.swm = swm
-        self.ime_restorator_installation_path=os.path.join(self.swm.remote_swm_dir, "ime_restorator.sh")
+        self.ime_restorator_installation_path=os.path.join(self.swm.adb_wrapper.remote_swm_dir, "ime_restorator.sh")
 
     def run_previous_ime_restoration_script(self):
-        #print("Warning: run_previous_ime_restoration_script is not implemented yet")
-        #return
-        installation_path = self.install_previous_ime_restoration_script()
+
+        # execute this method everytime run a new app
+        # run it on android as root
+        
+        self.install_previous_ime_restoration_script()
         # check for previous script pid, if running, do not start instance, else just start and record pid.
-        cmd = ["su", "-c", "sh", "-c", "nohup sh %s > /dev/null" % self.ime_restorator_installation_path]
-        self.swm.adb_wrapper.execute_shell(cmd)
+        # cmd = ["su", "-c", "sh %s" % self.ime_restorator_installation_path]
+        cmd = ["su", "-c", "busybox nohup sh %s & exit 0" % self.ime_restorator_installation_path]
+        start_daemon_thread(target=self.swm.adb_wrapper.execute_shell, args=(cmd,))
 
     def install_previous_ime_restoration_script(self):
-        #print("Warning: install_previous_ime_restoration_script is not implemented yet")
-        #return
+
+        # just write the content to the path, if sha256 mismatch or file missing
         installation_path = self.ime_restorator_installation_path
         # main script:
         # look for "@scrcpy_" unix domain sockets on device (adb shell cat /proc/net/unix | grep @scrcpy_)
@@ -3993,6 +3999,7 @@ while true; do
     fi
 done
         """
+        # singleton check
         script_content = """#!/system/bin/sh
 
 # Get current PID and set PID file path
@@ -4031,11 +4038,6 @@ exit 0
             script_content=script_content, remote_script_path=installation_path
         )
         return installation_path
-        # just write the content to the path, if sha256 mismatch or file missing
-        # execute this method everytime run a new app
-        # run it on android as root
-        ...
-
     def get_current_ime(self):
         ret = self.swm.adb_wrapper.get_current_ime()
         return ret
