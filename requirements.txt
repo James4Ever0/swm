@@ -1,3 +1,4 @@
+fuzzywuzzy
 omegaconf
 docopt
 requests
@@ -6,3 +7,8 @@ pandas
 tinydb
 pyperclip
 pyautogui
+psutil
+textual
+pillow
+filelock
+# TODO: install different package based on different os, in setup.py
