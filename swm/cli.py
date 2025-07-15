@@ -1186,8 +1186,10 @@ class AppManager:
         self.config = swm.config
 
     def terminate(self, app_id: str):
-        cmd = f"am force-stop {app_id}".split()
-        self.swm.adb_wrapper.execute_shell(cmd)
+        self.swm.adb_wrapper.execute_su_cmd(f"am force-stop {app_id}")
+        self.swm.adb_wrapper.execute_su_cmd(f"am kill {app_id}")
+        self.swm.adb_wrapper.execute_su_cmd(f"pm disable {app_id}")
+        self.swm.adb_wrapper.execute_su_cmd(f"pm enable {app_id}")
 
     def list_recent_apps(self, print_formatted=False):
 
