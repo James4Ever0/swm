@@ -68,6 +68,8 @@ Environment variables:
 
 MAIN_DISPLAY = -1
 
+# TODO: configure behavior after "unknown" or "manual" scrcpy shutdown, would we remove the background app after close or we keep it open
+
 # TODO: add timeout on all subprocess commands, except for those interactive or indefinite ones
 
 # TODO: check gboard version, include gboard apk in our binary release, install gboard as our official companion input method app in uhid mode
@@ -1196,10 +1198,7 @@ class AppManager:
         self.config = swm.config
 
     def terminate(self, app_id: str):
-        self.swm.adb_wrapper.execute_su_cmd(f"am force-stop {app_id}")
-        self.swm.adb_wrapper.execute_su_cmd(f"am kill {app_id}")
-        self.swm.adb_wrapper.execute_su_cmd(f"pm disable {app_id}")
-        self.swm.adb_wrapper.execute_su_cmd(f"pm enable {app_id}")
+        self.swm.adb_wrapper.terminate_app(app_id)
 
     def list_recent_apps(self, print_formatted=False):
         ret = self.swm.adb_wrapper.list_recent_apps()
@@ -2134,6 +2133,7 @@ class DeviceManager:
         )
 
     def status(self):
+        # TODO: use svc to toggle status 
         return {
             **self._get_audio_status(),
             **self._get_battery_status(),
@@ -2144,24 +2144,25 @@ class DeviceManager:
             **self._get_mobile_data_status(),
             **self._get_location_status(),
             **self._get_nfc_status(),
-            **self._get_flashlight_status(),
+            # **self._get_flashlight_status(),
         }
 
     def _run_command(self, cmd):
         """Helper to execute shell commands."""
         return self.swm.adb_wrapper.check_output_shell(cmd)
 
-    def _get_audio_status(self):
+    def _get_audio_status(self): # not working well
         """Get all audio-related volume levels."""
         ret = {}
         output = self._run_command(["dumpsys", "audio"])
+        line_parts = output.replace("\n", "").split("-")
         
         # Helper to parse volume from a line
-        def parse_volume(line, stream_name):
-            if stream_name in line and "volume" in line:
-                parts = line.split()
-                if "volume" in parts:
-                    idx = parts.index("volume")
+        def parse_volume(line:str, stream_name:str):
+            if " " + stream_name in line and "Current:" in line:
+                parts = line.replace("streamVolume:", "streamVolume: ").split()
+                if "Current:" in parts:
+                    idx = parts.index("streamVolume:")
                     if idx + 1 < len(parts):
                         try:
                             return int(parts[idx+1].strip(','))
@@ -2170,7 +2171,7 @@ class DeviceManager:
             return None
         
         # Parse all volume types
-        for line in output.splitlines():
+        for line in line_parts:
             if (vol := parse_volume(line, "STREAM_MUSIC")) is not None:
                 ret['media_volume'] = vol
             elif (vol := parse_volume(line, "STREAM_RING")) is not None:
@@ -2217,27 +2218,33 @@ class DeviceManager:
         wifi_enabled = None
         wifi_ssid = None
         wifi_signal = None
+
+        wifi_lines = grep_lines(output, ["Wi-Fi"])
         
-        for line in output.splitlines():
+        for line in wifi_lines:
             line_lower = line.lower()
-            if "wi-fi" in line_lower:
+            if "wi-fi is" in line_lower:
                 if any(x in line_lower for x in ["enabled", "true"]):
                     wifi_enabled = True
                 elif any(x in line_lower for x in ["disabled", "false"]):
                     wifi_enabled = False
-            elif "ssid" in line_lower and "current" in line_lower:
-                parts = line.split('SSID:')
-                if len(parts) > 1:
-                    ssid_part = parts[1].strip()
-                    if ssid_part.startswith('"') and ssid_part.endswith('"'):
-                        ssid_part = ssid_part[1:-1]
-                    wifi_ssid = ssid_part.split(',')[0].strip()
-            elif "rssi" in line_lower:
-                parts = line.split()
-                for part in parts:
-                    if part.startswith('-') and part[1:].isdigit():
-                        wifi_signal = int(part)
-                        break
+            else:
+                if "Supplicant state: COMPLETED" in line:
+                    parts = line.split('SSID:')
+                    if len(parts) > 1:
+                        ssid_part = parts[1].strip()
+                        if ssid_part.startswith('"') and ssid_part.endswith('"'):
+                            ssid_part = ssid_part[1:-1]
+                        wifi_ssid = ssid_part.split(',')[0].strip('"')
+                    if "rssi" in line_lower:
+                        parts = line.split("RSSI:")
+                        part = parts[1].split(",")[0].strip()
+                        # print("Part:", part)
+                        if part.startswith('-') and part[1:].isdigit():
+                            wifi_signal = int(part)
+                            break
+                else:
+                    continue
                         
         return {
             'wifi_enabled': wifi_enabled,
@@ -2261,7 +2268,7 @@ class DeviceManager:
         output = self._run_command(["settings", "get", "global", "airplane_mode_on"])
         return {'airplane_mode': output.strip() == "1"}
 
-    def _get_hotspot_status(self):
+    def _get_hotspot_status_dumpsys(self):
         """Get personal hotspot state."""
         output = self._run_command(["dumpsys", "connectivity", "tethering"])
         for line in output.splitlines():
@@ -2271,6 +2278,12 @@ class DeviceManager:
                 elif any(x in line.lower() for x in ["disabled", "off", "false", "0"]):
                     return {'hotspot_enabled': False}
         return {}
+    
+    def _get_hotspot_status(self):
+        output = self._run_command(["settings", "get", "global","wifi_ap_state"]).strip()
+        ret = dict(hotspot_enabled=output == "1")
+        return ret
+        
 
     def _get_mobile_data_status(self):
         """Get mobile data state."""
@@ -2289,13 +2302,23 @@ class DeviceManager:
         return {}
 
     def _get_nfc_status(self):
+        output = self._run_command(["dumpsys",  "nfc"])
+        return dict(nfc_enabled = output.startswith("mState=on"))
+    def _get_nfc_status_settings(self):
         """Get NFC state."""
         output = self._run_command(["settings", "get", "secure", "nfc_on"])
         return {'nfc_enabled': output.strip() == "1"}
 
     def _get_flashlight_status(self):
         """Get flashlight state."""
-        output = self._run_command(["dumpsys", "torch"])
+        output = ""
+        try:
+            output += self._run_command(["dumpsys", "torch"])
+        except: pass
+        try:
+            output += self._run_command(['dumpsys', 'notification', '--noredact']
+)
+        except: pass
         for line in output.splitlines():
             if any(x in line.lower() for x in ["torch", "flashlight"]):
                 if any(x in line.lower() for x in ["enabled", "on", "true"]):
@@ -2363,6 +2386,12 @@ class AdbWrapper:
         self.remote_swm_dir = self.config.android_session_storage_path
         self.initialize()
         self.remote = self
+
+    def terminate_app(self, app_id:str):
+        self.execute_su_cmd(f"am force-stop {app_id}")
+        self.execute_su_cmd(f"am kill {app_id}")
+        self.execute_su_cmd(f"pm disable {app_id}")
+        self.execute_su_cmd(f"pm enable {app_id}")
 
     def install_script_if_missing_or_mismatch(
         self, script_content: str, remote_script_path: str
@@ -3768,9 +3797,14 @@ class ScrcpyWrapper:
 
             restart_reasons = self.config.restart_reasons
 
+            app_stop_reasons = self.config.app_stop_reasons
+
             need_restart = not has_exception and (terminate_reason in restart_reasons)
 
+            need_app_stop = self.is_device_connected() and (terminate_reason in app_stop_reasons)
+
             setattr(proc, "need_restart", need_restart)
+            setattr(proc, "need_app_stop", need_app_stop)
 
             if need_restart:
                 if terminate_reason == "app_gone":
@@ -3788,6 +3822,9 @@ class ScrcpyWrapper:
                 restart_params = launch_params.copy()
                 restart_params["env"] = env
                 self.launch_app(**restart_params)
+            
+            elif need_app_stop:
+                self.swm.adb_wrapper.terminate_app(package_name)
 
             no_swm_process_running = not self.has_swm_process_running
 
@@ -4571,6 +4608,9 @@ def create_default_config(cache_dir: str):
                 "device_offline",
                 "app_gone",
             ],
+            "app_stop_reasons":[
+                "unknown"
+            ],
             "use_shared_app_config": True,
             "binaries": {
                 "adb": {"version": "1.0.41"},
@@ -4768,9 +4808,14 @@ def main():
             last_used = args["last-used"]
             swm.device_manager.list(print_formatted=True, show_last_used=last_used)
         elif args["status"]:
-            raise NotImplementedError("Device status is not implemented yet")
+            # raise NotImplementedError("Device status is not implemented yet")
             query = args["<query>"]
-            swm.device_manager.status()
+            device_id = swm.device_manager.search(query=query)
+            swm.set_current_device(device_id)
+            status = swm.device_manager.status()
+            print("Status at device %s:" % swm.current_device)
+            output = pretty_print_json(status)
+            print(output)
         elif args["search"]:
             device = swm.device_manager.search()
             ans = prompt_for_option_selection(["select", "name"], "Choose an option:")
