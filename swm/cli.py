@@ -1,6 +1,4 @@
-__doc__ = (
-    DOCSTRING
-) = """SWM - Scrcpy Window Manager
+__doc__ = DOCSTRING = """SWM - Scrcpy Window Manager
 
 Usage:
   swm init [force]
@@ -40,6 +38,7 @@ Usage:
   swm [options] device list [last-used]
   swm [options] device search [index]
   swm [options] device select <query>
+  swm [options] device status <query>
   swm [options] device name <device_id> <device_alias>
   swm [options] baseconfig show [diagnostic]
   swm [options] baseconfig show-default
@@ -527,37 +526,48 @@ def encode_base64_str(data: str):
 # TODO: monitor the output of scrcpy and capture unicode char input accordingly, for sending unicode char to the adbkeyboard
 
 
-class OldInstanceRunning(AssertionError): ...
+class OldInstanceRunning(AssertionError):
+    ...
 
 
-class NoDeviceError(ValueError): ...
+class NoDeviceError(ValueError):
+    ...
 
 
-class NoSelectionError(ValueError): ...
+class NoSelectionError(ValueError):
+    ...
 
 
-class NoConfigError(ValueError): ...
+class NoConfigError(ValueError):
+    ...
 
 
-class NoAppError(ValueError): ...
+class NoAppError(ValueError):
+    ...
 
 
-class NoBaseConfigError(ValueError): ...
+class NoBaseConfigError(ValueError):
+    ...
 
 
-class NoDeviceConfigError(ValueError): ...
+class NoDeviceConfigError(ValueError):
+    ...
 
 
-class NoDeviceAliasError(ValueError): ...
+class NoDeviceAliasError(ValueError):
+    ...
 
 
-class NoDeviceNameError(ValueError): ...
+class NoDeviceNameError(ValueError):
+    ...
 
 
-class NoDeviceIdError(ValueError): ...
+class NoDeviceIdError(ValueError):
+    ...
 
 
-class DeviceOfflineError(ValueError): ...
+class DeviceOfflineError(ValueError):
+    ...
 
 
 def prompt_for_option_selection(
@@ -798,7 +808,6 @@ def search_or_obtain_binary_path_from_environmental_variable_or_download(
 def download_binary_into_cache_dir_and_return_path(
     cache_dir: str, bin_type: str, bin_name: str
 ) -> str:
-
     raise NotImplementedError(
         "Downloading is not implemented yet for %s-%s-%s"
         % (*get_system_and_architecture(), bin_name)
@@ -1027,6 +1036,7 @@ class SWM:
     def repl(self):
         print("Warning: REPL mode is not implemented yet.")
         self.repl_manager.repl()
+
     @property
     def local_icon_dir(self):
         assert self.current_device
@@ -1192,7 +1202,6 @@ class AppManager:
         self.swm.adb_wrapper.execute_su_cmd(f"pm enable {app_id}")
 
     def list_recent_apps(self, print_formatted=False):
-
         ret = self.swm.adb_wrapper.list_recent_apps()
 
         if print_formatted:
@@ -1626,12 +1635,14 @@ class SessionManager:
         self.swm.adb_wrapper.execute(
             ["shell", "mkdir", "-p", self.session_dir], check=False
         )
-    def get_window_size_and_position_info_by_pid(self, pid:int):
-          # get window w h x y is_minimized is_maximized display_id (if possible)
-          # -1 means MAIN_DISPLAY
-          # TODO: collect these info at session saving
-          ret=dict()
-          return ret
+
+    def get_window_size_and_position_info_by_pid(self, pid: int):
+        # get window w h x y is_minimized is_maximized display_id (if possible)
+        # -1 means MAIN_DISPLAY
+        # TODO: collect these info at session saving
+        ret = dict()
+        return ret
+
     @property
     def template_session_config(self):
         return """
@@ -1929,14 +1940,14 @@ class SessionManager:
         print("Saving session for device:", device)
         # Get current window positions and app states
         pc = self.get_pc_info()
-        timestamp=int(time.time())
-        windows=self.get_window_states_for_device_by_scrcpy_pid_files(
-                drop_pid=False
-            )
+        timestamp = int(time.time())
+        windows = self.get_window_states_for_device_by_scrcpy_pid_files(drop_pid=False)
         for it in windows:
-            pid=it["pid"]
+            pid = it["pid"]
             del it["pid"]
-            it["window_transient_props"]=self.get_window_size_and_position_info_by_pid(pid)
+            it[
+                "window_transient_props"
+            ] = self.get_window_size_and_position_info_by_pid(pid)
         session_data = {
             "timestamp": timestamp,
             "device": device,
@@ -1978,9 +1989,9 @@ class SessionManager:
             pc_hostname = session_data["pc"]["hostname"]
             device_id = session_data["device"]
             window_names = []
-            for it in session_data['windows']:
-                launch_params = it['launch_params']
-                title = launch_params['title']
+            for it in session_data["windows"]:
+                launch_params = it["launch_params"]
+                title = launch_params["title"]
                 window_names.append(title)
             brief_data = dict(
                 pc_hostname=pc_hostname, device_id=device_id, window_names=window_names
@@ -2121,6 +2132,177 @@ class DeviceManager:
         self.current_device_file = os.path.join(
             self.swm.config.cache_dir, "current_device.txt"
         )
+
+    def status(self):
+        return {
+            **self._get_audio_status(),
+            **self._get_battery_status(),
+            **self._get_wifi_status(),
+            **self._get_bluetooth_status(),
+            **self._get_airplane_mode_status(),
+            **self._get_hotspot_status(),
+            **self._get_mobile_data_status(),
+            **self._get_location_status(),
+            **self._get_nfc_status(),
+            **self._get_flashlight_status(),
+        }
+
+    def _run_command(self, cmd):
+        """Helper to execute shell commands."""
+        return self.swm.adb_wrapper.check_output_shell(cmd)
+
+    def _get_audio_status(self):
+        """Get all audio-related volume levels."""
+        ret = {}
+        output = self._run_command(["dumpsys", "audio"])
+        
+        # Helper to parse volume from a line
+        def parse_volume(line, stream_name):
+            if stream_name in line and "volume" in line:
+                parts = line.split()
+                if "volume" in parts:
+                    idx = parts.index("volume")
+                    if idx + 1 < len(parts):
+                        try:
+                            return int(parts[idx+1].strip(','))
+                        except ValueError:
+                            pass
+            return None
+        
+        # Parse all volume types
+        for line in output.splitlines():
+            if (vol := parse_volume(line, "STREAM_MUSIC")) is not None:
+                ret['media_volume'] = vol
+            elif (vol := parse_volume(line, "STREAM_RING")) is not None:
+                ret['ring_volume'] = vol
+            elif (vol := parse_volume(line, "STREAM_ALARM")) is not None:
+                ret['alarm_volume'] = vol
+            elif (vol := parse_volume(line, "STREAM_NOTIFICATION")) is not None:
+                ret['notification_volume'] = vol
+            elif (vol := parse_volume(line, "STREAM_VOICE_CALL")) is not None:
+                ret['call_volume'] = vol
+                
+        return ret
+
+    def _get_battery_status(self):
+        """Get battery level and charging status."""
+        output = self._run_command(["dumpsys", "battery"])
+        battery_level = None
+        charging = None
+        
+        for line in output.splitlines():
+            line_lower = line.lower()
+            if "level" in line_lower:
+                parts = line.split()
+                for part in parts:
+                    if part.isdigit():
+                        battery_level = int(part)
+                        break
+            elif "status" in line_lower or "ac powered" in line_lower:
+                if any(x in line_lower for x in ["2", "charging", "true"]):
+                    charging = True
+                elif "5" in line_lower:  # Full
+                    charging = True
+                elif any(x in line_lower for x in ["1", "3", "4", "false"]):
+                    charging = False
+                    
+        return {
+            'battery_level': battery_level,
+            'charging': charging
+        }
+
+    def _get_wifi_status(self):
+        """Get WiFi enabled state, SSID, and signal strength."""
+        output = self._run_command(["dumpsys", "wifi"])
+        wifi_enabled = None
+        wifi_ssid = None
+        wifi_signal = None
+        
+        for line in output.splitlines():
+            line_lower = line.lower()
+            if "wi-fi" in line_lower:
+                if any(x in line_lower for x in ["enabled", "true"]):
+                    wifi_enabled = True
+                elif any(x in line_lower for x in ["disabled", "false"]):
+                    wifi_enabled = False
+            elif "ssid" in line_lower and "current" in line_lower:
+                parts = line.split('SSID:')
+                if len(parts) > 1:
+                    ssid_part = parts[1].strip()
+                    if ssid_part.startswith('"') and ssid_part.endswith('"'):
+                        ssid_part = ssid_part[1:-1]
+                    wifi_ssid = ssid_part.split(',')[0].strip()
+            elif "rssi" in line_lower:
+                parts = line.split()
+                for part in parts:
+                    if part.startswith('-') and part[1:].isdigit():
+                        wifi_signal = int(part)
+                        break
+                        
+        return {
+            'wifi_enabled': wifi_enabled,
+            'wifi_ssid': wifi_ssid,
+            'wifi_signal': wifi_signal
+        }
+
+    def _get_bluetooth_status(self):
+        """Get Bluetooth enabled state."""
+        output = self._run_command(["dumpsys", "bluetooth_manager"])
+        for line in output.splitlines():
+            if any(x in line.lower() for x in ["state", "enabled"]):
+                if any(x in line.lower() for x in ["on", "true", "10"]):
+                    return {'bluetooth_enabled': True}
+                elif any(x in line.lower() for x in ["off", "false", "0"]):
+                    return {'bluetooth_enabled': False}
+        return {}
+
+    def _get_airplane_mode_status(self):
+        """Get airplane mode state."""
+        output = self._run_command(["settings", "get", "global", "airplane_mode_on"])
+        return {'airplane_mode': output.strip() == "1"}
+
+    def _get_hotspot_status(self):
+        """Get personal hotspot state."""
+        output = self._run_command(["dumpsys", "connectivity", "tethering"])
+        for line in output.splitlines():
+            if any(x in line.lower() for x in ["hotspot", "tethering"]):
+                if any(x in line.lower() for x in ["enabled", "on", "true", "1"]):
+                    return {'hotspot_enabled': True}
+                elif any(x in line.lower() for x in ["disabled", "off", "false", "0"]):
+                    return {'hotspot_enabled': False}
+        return {}
+
+    def _get_mobile_data_status(self):
+        """Get mobile data state."""
+        output = self._run_command(["settings", "get", "global", "mobile_data"])
+        return {'mobile_data_enabled': output.strip() == "1"}
+
+    def _get_location_status(self):
+        """Get location services state."""
+        output = self._run_command(["dumpsys", "location"])
+        for line in output.splitlines():
+            if "location" in line.lower():
+                if any(x in line.lower() for x in ["enabled", "true", "1"]):
+                    return {'location_enabled': True}
+                elif any(x in line.lower() for x in ["disabled", "false", "0"]):
+                    return {'location_enabled': False}
+        return {}
+
+    def _get_nfc_status(self):
+        """Get NFC state."""
+        output = self._run_command(["settings", "get", "secure", "nfc_on"])
+        return {'nfc_enabled': output.strip() == "1"}
+
+    def _get_flashlight_status(self):
+        """Get flashlight state."""
+        output = self._run_command(["dumpsys", "torch"])
+        for line in output.splitlines():
+            if any(x in line.lower() for x in ["torch", "flashlight"]):
+                if any(x in line.lower() for x in ["enabled", "on", "true"]):
+                    return {'flashlight_enabled': True}
+                elif any(x in line.lower() for x in ["disabled", "off", "false"]):
+                    return {'flashlight_enabled': False}
+        return {}
 
     def list(self, print_formatted: bool = False, show_last_used=False):
         ret = self.swm.adb_wrapper.list_device_detailed()
@@ -2835,7 +3017,6 @@ for (UsageStats usageStats : stats.values()) {
 
     @property
     def remote_tmpdir(self):
-
         tmpdir = os.path.join(self.remote_swm_dir, "tmp")
         self.create_dirs_if_not_exist(tmpdir)
         return tmpdir
@@ -3703,9 +3884,9 @@ class ScrcpyWrapper:
                 display_id = getattr(proc, "display_id")
                 break
 
-        last_app_in_display = app_in_display = (
-            True  # self.check_app_in_display(app_id, display_id)
-        )
+        last_app_in_display = (
+            app_in_display
+        ) = True  # self.check_app_in_display(app_id, display_id)
         while True:
             last_app_in_display = app_in_display
             time.sleep(1)
@@ -3755,15 +3936,19 @@ class ScrcpyWrapper:
         return previous_ime
 
     def read_previous_ime_from_device(self):
-        if self.swm.adb_wrapper.test_path_existance_su("/data/local/tmp/previous_ime.txt"):
-              return self.swm.adb_wrapper.read_file("/data/local/tmp/previous_ime.txt")
-        #assert self.swm.on_device_db
-        #return self.swm.on_device_db.read_previous_ime()
+        if self.swm.adb_wrapper.test_path_existance_su(
+            "/data/local/tmp/previous_ime.txt"
+        ):
+            return self.swm.adb_wrapper.read_file("/data/local/tmp/previous_ime.txt")
+        # assert self.swm.on_device_db
+        # return self.swm.on_device_db.read_previous_ime()
 
     def store_previous_ime_to_device(self, previous_ime: str):
-        self.swm.adb_wrapper.write_file(remote_path='/data/local/tmp/previous_ime.txt',content=previous_ime)
-        #assert self.swm.on_device_db
-        #self.swm.on_device_db.write_previous_ime(previous_ime)
+        self.swm.adb_wrapper.write_file(
+            remote_path="/data/local/tmp/previous_ime.txt", content=previous_ime
+        )
+        # assert self.swm.on_device_db
+        # self.swm.on_device_db.write_previous_ime(previous_ime)
 
     def start_sidecar_scrcpy_app_monitor_thread(
         self, app_id: str, proc: subprocess.Popen
@@ -3925,8 +4110,9 @@ class FzfWrapper:
 
 
 class ReplManager:
-    def __init__(self, swm:SWM):
-        self.swm=swm
+    def __init__(self, swm: SWM):
+        self.swm = swm
+
     def repl(self):
         # TODO: implement repl specific commands and exclude those from cli commands, like exit, help, task (list|stop)
         while True:
@@ -3946,25 +4132,29 @@ class ReplManager:
                     print("Parsed args:", swm_args)
 
 
-
 class ImeManager:
     def __init__(self, swm: SWM):
         self.swm = swm
-        self.ime_restorator_installation_path=os.path.join(self.swm.adb_wrapper.remote_swm_dir, "ime_restorator.sh")
+        self.ime_restorator_installation_path = os.path.join(
+            self.swm.adb_wrapper.remote_swm_dir, "ime_restorator.sh"
+        )
 
     def run_previous_ime_restoration_script(self):
-
         # execute this method everytime run a new app
         # run it on android as root
-        
+
         self.install_previous_ime_restoration_script()
         # check for previous script pid, if running, do not start instance, else just start and record pid.
         # cmd = ["su", "-c", "sh %s" % self.ime_restorator_installation_path]
-        cmd = ["su", "-c", "busybox nohup sh %s & exit 0" % self.ime_restorator_installation_path]
+        cmd = [
+            "su",
+            "-c",
+            "busybox nohup sh %s & exit 0" % self.ime_restorator_installation_path,
+        ]
+        # TODO: make it truly background without threading, or handle its exception at device disconnection
         start_daemon_thread(target=self.swm.adb_wrapper.execute_shell, args=(cmd,))
 
     def install_previous_ime_restoration_script(self):
-
         # just write the content to the path, if sha256 mismatch or file missing
         installation_path = self.ime_restorator_installation_path
         # main script:
@@ -3974,7 +4164,7 @@ class ImeManager:
         # look for previous ime record file
         #   if previous ime file exist, enable and set to previous ime
         #   if not exist, just exit
-        main_script="""
+        main_script = """
 PREV_IME_FILE=/data/local/tmp/previous_ime.txt
 
 while true; do
@@ -4000,7 +4190,8 @@ while true; do
 done
         """
         # singleton check
-        script_content = """#!/system/bin/sh
+        script_content = (
+            """#!/system/bin/sh
 
 # Get current PID and set PID file path
 CURRENT_PID=$$
@@ -4033,11 +4224,14 @@ echo "Begin execution"
 
 # Final cleanup (handled by trap but explicit exit is good practice)
 exit 0
-""" % main_script
+"""
+            % main_script
+        )
         self.swm.adb_wrapper.install_script_if_missing_or_mismatch(
             script_content=script_content, remote_script_path=installation_path
         )
         return installation_path
+
     def get_current_ime(self):
         ret = self.swm.adb_wrapper.get_current_ime()
         return ret
@@ -4116,7 +4310,8 @@ exit 0
             print("No previous IME")
 
 
-class WirelessManager: ...
+class WirelessManager:
+    ...
 
 
 # for mounting file
@@ -4124,8 +4319,13 @@ class FileManager:
     def __init__(self, swm: SWM):
         self.swm = swm
 
-    def mount_from_device_to_pc(self, device_path: str, pc_path: str): ...
-    def mount_from_pc_to_device(self, pc_path: str, device_path: str): ...
+    def mount_from_device_to_pc(self, device_path: str, pc_path: str):
+        ...
+
+    def mount_from_pc_to_device(self, pc_path: str, device_path: str):
+        ...
+
+
 class JavaManager:
     def __init__(self, swm: SWM):
         self.swm = swm
@@ -4450,7 +4650,6 @@ def parse_args(
             )
         return ret
     except DocoptExit:
-
         if print_help_on_error:
             # print the docstring
             print(DOCSTRING)
@@ -4568,6 +4767,10 @@ def main():
         if args["list"]:
             last_used = args["last-used"]
             swm.device_manager.list(print_formatted=True, show_last_used=last_used)
+        elif args["status"]:
+            raise NotImplementedError("Device status is not implemented yet")
+            query = args["<query>"]
+            swm.device_manager.status()
         elif args["search"]:
             device = swm.device_manager.search()
             ans = prompt_for_option_selection(["select", "name"], "Choose an option:")
