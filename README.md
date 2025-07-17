@@ -119,22 +119,31 @@ Environment variables:
 
 ## Demo
 
+### App fuzzy search
 ![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-app-run-fuzzy.gif "App fuzzy search")
 
+### App search and run
 ![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-app-search-and-run.gif "App search and run")
 
+### Chrome demo
 ![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-chrome-demo.gif "Chrome demo")
 
+### Device status
 ![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-device-status.gif "Device status")
 
+### Java shell
 ![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-java-shell.gif "Java shell")
 
-![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-list-ime.gif "List IME")
+### List ime
+![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-list-ime.gif "List ime")
 
+### Search
 ![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-search.gif "Search")
 
+### Termux demo
 ![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-termux-demo.gif "Termux demo")
 
+### Termux shell
 ![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-termux-shell.gif "Termux shell")
 
 ## Related projects
