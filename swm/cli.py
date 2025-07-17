@@ -29,7 +29,7 @@ Usage:
   swm [options] termux shell [<shell_args>...]
   swm [options] session list [last-used]
   swm [options] session search [index]
-  swm [options] session restore [session_name]
+  swm [options] session restore <query>
   swm [options] session delete <query>
   swm [options] session edit <query>
   swm [options] session view (plain|brief) <query>
@@ -1374,11 +1374,7 @@ class AppManager:
             if not os.path.exists(icon_path):
                 self.retrieve_app_icon(app_id, icon_path)
             env["SCRCPY_ICON_PATH"] = icon_path
-            # except:
-            #     traceback.print_exc() # TODO: print traceback only if verbose mode is on
-            #     print("Failed to retrieve app icon for:", app_id)
-        # Add window config if exists
-        # print("Env:", env)
+            
         win = app_config.get("window", None)
 
 
@@ -1417,7 +1413,7 @@ class AppManager:
         # return True if edited, else False
         print(f"Editing config for {app_name}")
         app_config_path = self.get_app_config_path(app_name)
-        self.get_or_create_app_config(app_name)
+        self.get_or_create_app_config(app_name, resolve_reference=False)
         content = self.swm.adb_wrapper.read_file(app_config_path)
         edited_content = edit_content(content)
         ret = edited_content != content
