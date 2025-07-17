@@ -872,6 +872,15 @@ class ADBStorage(Storage):
         pass
 
 
+def check_flag_presense_in_custom_args(flag:str, custom_args:Optional[list[str]]):
+    if custom_args:
+        if not any([flag in it for it in custom_args]):
+            return False
+        else:
+            return True
+    else:
+        return False
+
 class SWMOnDeviceDatabase:
     def __init__(self, db_path: str, adb_wrapper: "AdbWrapper"):
         import functools
@@ -1372,10 +1381,11 @@ class AppManager:
         # print("Env:", env)
         win = app_config.get("window", None)
 
-        scrcpy_args = []
 
-        # if scrcpy_args is None:
-        #     scrcpy_args = app_config.get("scrcpy_args", None)
+        scrcpy_args = app_config.get("scrcpy_args", None)
+
+        if scrcpy_args is None:
+            scrcpy_args = []
 
         title = self.build_window_title(app_id)
 
@@ -3582,17 +3592,22 @@ class ScrcpyWrapper:
         if window_params:
             for it in ["x", "y", "width", "height"]:
                 if it in window_params:
+                    # if not check_flag_presense_in_custom_args(flag = "--window-%s" % it, custom_args = scrcpy_args):
                     args.extend(["--window-%s=%s" % (it, window_params[it])])
                     configured_window_options.append("--window-%s" % it)
 
         if new_display:
-            args.extend(["--new-display"])
+            if not check_flag_presense_in_custom_args(flag = "--new-display", custom_args = scrcpy_args):
+                args.extend(['--new-display'])
 
         if no_audio:
-            args.extend(["--no-audio"])
+
+            if not check_flag_presense_in_custom_args(flag = "--no-audio", custom_args = scrcpy_args):
+                args.extend(["--no-audio"])
 
         if title:
-            args.extend(["--window-title", title])
+            if not check_flag_presense_in_custom_args(flag = "--window-title", custom_args = scrcpy_args):
+                args.extend(["--window-title", title])
 
         if scrcpy_args:
             for it in scrcpy_args:
@@ -3610,6 +3625,10 @@ class ScrcpyWrapper:
         # self.execute(args)
         unicode_char_warning = "[server] WARN: Could not inject char"
         cmd = self._build_cmd(args)
+
+        # print("SCRCPY cmd:", cmd)
+        # print("SCRCPY args:", scrcpy_args)
+        # exit(0)
 
         _env = os.environ.copy()
         _env.update(env)
