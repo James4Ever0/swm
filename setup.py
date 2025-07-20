@@ -18,14 +18,14 @@ URL = 'https://github.com/james4ever0/swm'
 EMAIL = 'randomvoidmail@foxmail.com'
 AUTHOR = 'James Brown'
 REQUIRES_PYTHON = '>=3.6.0'
-VERSION = '0.0.2'
+VERSION = '0.3.3.2.2'
 
 # What packages are required for this module to be executed?
 REQUIRED = open('requirements.txt').read().split('\n')
 
 # What packages are optional?
 EXTRAS = {
-    # 'fancy feature': ['django'],
+    'speedup': ['python-Levenshtein'],
 }
 
 # The rest you shouldn't have to touch too much :)
@@ -115,7 +115,7 @@ setup(
     classifiers=[
         # Trove classifiers
         # Full list: https://pypi.python.org/pypi?%3Aaction=list_classifiers
-        'License :: OSI Approved :: MIT License',
+        'License :: OSI Approved :: The Unlicense (Unlicense)',
         'Programming Language :: Python',
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.6',

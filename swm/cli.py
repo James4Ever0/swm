@@ -1,4 +1,6 @@
-__doc__ = DOCSTRING = """SWM - Scrcpy Window Manager
+__doc__ = (
+    DOCSTRING
+) = """SWM - Scrcpy Window Manager
 
 Usage:
   swm init [force]
@@ -159,6 +161,8 @@ from tinydb.table import Document
 __version__ = "0.1.0"
 
 # TODO: refactor all code in scrcpywrapper and adbwrapper that does not require device_id with NO_DEVICE_ID
+
+# TODO: run swm on termux, android with limited cli arguments
 
 NO_DEVICE_ID = "NO_DEVICE_ID"
 
@@ -528,48 +532,37 @@ def encode_base64_str(data: str):
 # TODO: monitor the output of scrcpy and capture unicode char input accordingly, for sending unicode char to the adbkeyboard
 
 
-class OldInstanceRunning(AssertionError):
-    ...
+class OldInstanceRunning(AssertionError): ...
 
 
-class NoDeviceError(ValueError):
-    ...
+class NoDeviceError(ValueError): ...
 
 
-class NoSelectionError(ValueError):
-    ...
+class NoSelectionError(ValueError): ...
 
 
-class NoConfigError(ValueError):
-    ...
+class NoConfigError(ValueError): ...
 
 
-class NoAppError(ValueError):
-    ...
+class NoAppError(ValueError): ...
 
 
-class NoBaseConfigError(ValueError):
-    ...
+class NoBaseConfigError(ValueError): ...
 
 
-class NoDeviceConfigError(ValueError):
-    ...
+class NoDeviceConfigError(ValueError): ...
 
 
-class NoDeviceAliasError(ValueError):
-    ...
+class NoDeviceAliasError(ValueError): ...
 
 
-class NoDeviceNameError(ValueError):
-    ...
+class NoDeviceNameError(ValueError): ...
 
 
-class NoDeviceIdError(ValueError):
-    ...
+class NoDeviceIdError(ValueError): ...
 
 
-class DeviceOfflineError(ValueError):
-    ...
+class DeviceOfflineError(ValueError): ...
 
 
 def prompt_for_option_selection(
@@ -659,14 +652,23 @@ def edit_content(content: str):
         return edited_content
 
 
-def edit_or_open_file(filepath: str, return_value="edited"):
+def edit_file_with_ted(filepath: str):
+    import ted
+
+    return ted.edit(filepath=filepath)
+
+
+def edit_or_open_file(filepath: str, return_value="edited", use_ted=True):
     print("Editing file:", filepath)
     content_before_edit = get_file_content(filepath)
-    editor_binpath = select_editor()
-    if editor_binpath:
-        edit_file(filepath, editor_binpath)
+    if use_ted:
+        edit_file_with_ted(filepath)
     else:
-        open_file_with_default_application(filepath)
+        editor_binpath = select_editor()
+        if editor_binpath:
+            edit_file(filepath, editor_binpath)
+        else:
+            open_file_with_default_application(filepath)
     content_after_edit = get_file_content(filepath)
     edited = content_before_edit != content_after_edit
     if edited:
@@ -872,7 +874,7 @@ class ADBStorage(Storage):
         pass
 
 
-def check_flag_presense_in_custom_args(flag:str, custom_args:Optional[list[str]]):
+def check_flag_presense_in_custom_args(flag: str, custom_args: Optional[list[str]]):
     if custom_args:
         if not any([flag in it for it in custom_args]):
             return False
@@ -880,6 +882,7 @@ def check_flag_presense_in_custom_args(flag:str, custom_args:Optional[list[str]]
             return True
     else:
         return False
+
 
 class SWMOnDeviceDatabase:
     def __init__(self, db_path: str, adb_wrapper: "AdbWrapper"):
@@ -1374,9 +1377,8 @@ class AppManager:
             if not os.path.exists(icon_path):
                 self.retrieve_app_icon(app_id, icon_path)
             env["SCRCPY_ICON_PATH"] = icon_path
-            
-        win = app_config.get("window", None)
 
+        win = app_config.get("window", None)
 
         scrcpy_args = app_config.get("scrcpy_args", None)
 
@@ -1950,9 +1952,9 @@ class SessionManager:
         for it in windows:
             pid = it["pid"]
             del it["pid"]
-            it[
-                "window_transient_props"
-            ] = self.get_window_size_and_position_info_by_pid(pid)
+            it["window_transient_props"] = (
+                self.get_window_size_and_position_info_by_pid(pid)
+            )
         session_data = {
             "timestamp": timestamp,
             "device": device,
@@ -2139,7 +2141,7 @@ class DeviceManager:
         )
 
     def status(self):
-        # TODO: use svc to toggle status 
+        # TODO: use svc to toggle status
         return {
             **self._get_audio_status(),
             **self._get_battery_status(),
@@ -2157,38 +2159,38 @@ class DeviceManager:
         """Helper to execute shell commands."""
         return self.swm.adb_wrapper.check_output_shell(cmd)
 
-    def _get_audio_status(self): # not working well
+    def _get_audio_status(self):  # not working well
         """Get all audio-related volume levels."""
         ret = {}
         output = self._run_command(["dumpsys", "audio"])
         line_parts = output.replace("\n", "").split("-")
-        
+
         # Helper to parse volume from a line
-        def parse_volume(line:str, stream_name:str):
+        def parse_volume(line: str, stream_name: str):
             if " " + stream_name in line and "Current:" in line:
                 parts = line.replace("streamVolume:", "streamVolume: ").split()
                 if "Current:" in parts:
                     idx = parts.index("streamVolume:")
                     if idx + 1 < len(parts):
                         try:
-                            return int(parts[idx+1].strip(','))
+                            return int(parts[idx + 1].strip(","))
                         except ValueError:
                             pass
             return None
-        
+
         # Parse all volume types
         for line in line_parts:
             if (vol := parse_volume(line, "STREAM_MUSIC")) is not None:
-                ret['media_volume'] = vol
+                ret["media_volume"] = vol
             elif (vol := parse_volume(line, "STREAM_RING")) is not None:
-                ret['ring_volume'] = vol
+                ret["ring_volume"] = vol
             elif (vol := parse_volume(line, "STREAM_ALARM")) is not None:
-                ret['alarm_volume'] = vol
+                ret["alarm_volume"] = vol
             elif (vol := parse_volume(line, "STREAM_NOTIFICATION")) is not None:
-                ret['notification_volume'] = vol
+                ret["notification_volume"] = vol
             elif (vol := parse_volume(line, "STREAM_VOICE_CALL")) is not None:
-                ret['call_volume'] = vol
-                
+                ret["call_volume"] = vol
+
         return ret
 
     def _get_battery_status(self):
@@ -2196,7 +2198,7 @@ class DeviceManager:
         output = self._run_command(["dumpsys", "battery"])
         battery_level = None
         charging = None
-        
+
         for line in output.splitlines():
             line_lower = line.lower()
             if "level" in line_lower:
@@ -2212,11 +2214,8 @@ class DeviceManager:
                     charging = True
                 elif any(x in line_lower for x in ["1", "3", "4", "false"]):
                     charging = False
-                    
-        return {
-            'battery_level': battery_level,
-            'charging': charging
-        }
+
+        return {"battery_level": battery_level, "charging": charging}
 
     def _get_wifi_status(self):
         """Get WiFi enabled state, SSID, and signal strength."""
@@ -2226,7 +2225,7 @@ class DeviceManager:
         wifi_signal = None
 
         wifi_lines = grep_lines(output, ["Wi-Fi"])
-        
+
         for line in wifi_lines:
             line_lower = line.lower()
             if "wi-fi is" in line_lower:
@@ -2236,26 +2235,26 @@ class DeviceManager:
                     wifi_enabled = False
             else:
                 if "Supplicant state: COMPLETED" in line:
-                    parts = line.split('SSID:')
+                    parts = line.split("SSID:")
                     if len(parts) > 1:
                         ssid_part = parts[1].strip()
                         if ssid_part.startswith('"') and ssid_part.endswith('"'):
                             ssid_part = ssid_part[1:-1]
-                        wifi_ssid = ssid_part.split(',')[0].strip('"')
+                        wifi_ssid = ssid_part.split(",")[0].strip('"')
                     if "rssi" in line_lower:
                         parts = line.split("RSSI:")
                         part = parts[1].split(",")[0].strip()
                         # print("Part:", part)
-                        if part.startswith('-') and part[1:].isdigit():
+                        if part.startswith("-") and part[1:].isdigit():
                             wifi_signal = int(part)
                             break
                 else:
                     continue
-                        
+
         return {
-            'wifi_enabled': wifi_enabled,
-            'wifi_ssid': wifi_ssid,
-            'wifi_signal': wifi_signal
+            "wifi_enabled": wifi_enabled,
+            "wifi_ssid": wifi_ssid,
+            "wifi_signal": wifi_signal,
         }
 
     def _get_bluetooth_status(self):
@@ -2264,15 +2263,15 @@ class DeviceManager:
         for line in output.splitlines():
             if any(x in line.lower() for x in ["state", "enabled"]):
                 if any(x in line.lower() for x in ["on", "true", "10"]):
-                    return {'bluetooth_enabled': True}
+                    return {"bluetooth_enabled": True}
                 elif any(x in line.lower() for x in ["off", "false", "0"]):
-                    return {'bluetooth_enabled': False}
+                    return {"bluetooth_enabled": False}
         return {}
 
     def _get_airplane_mode_status(self):
         """Get airplane mode state."""
         output = self._run_command(["settings", "get", "global", "airplane_mode_on"])
-        return {'airplane_mode': output.strip() == "1"}
+        return {"airplane_mode": output.strip() == "1"}
 
     def _get_hotspot_status_dumpsys(self):
         """Get personal hotspot state."""
@@ -2280,21 +2279,22 @@ class DeviceManager:
         for line in output.splitlines():
             if any(x in line.lower() for x in ["hotspot", "tethering"]):
                 if any(x in line.lower() for x in ["enabled", "on", "true", "1"]):
-                    return {'hotspot_enabled': True}
+                    return {"hotspot_enabled": True}
                 elif any(x in line.lower() for x in ["disabled", "off", "false", "0"]):
-                    return {'hotspot_enabled': False}
+                    return {"hotspot_enabled": False}
         return {}
-    
+
     def _get_hotspot_status(self):
-        output = self._run_command(["settings", "get", "global","wifi_ap_state"]).strip()
+        output = self._run_command(
+            ["settings", "get", "global", "wifi_ap_state"]
+        ).strip()
         ret = dict(hotspot_enabled=output == "1")
         return ret
-        
 
     def _get_mobile_data_status(self):
         """Get mobile data state."""
         output = self._run_command(["settings", "get", "global", "mobile_data"])
-        return {'mobile_data_enabled': output.strip() == "1"}
+        return {"mobile_data_enabled": output.strip() == "1"}
 
     def _get_location_status(self):
         """Get location services state."""
@@ -2302,35 +2302,37 @@ class DeviceManager:
         for line in output.splitlines():
             if "location" in line.lower():
                 if any(x in line.lower() for x in ["enabled", "true", "1"]):
-                    return {'location_enabled': True}
+                    return {"location_enabled": True}
                 elif any(x in line.lower() for x in ["disabled", "false", "0"]):
-                    return {'location_enabled': False}
+                    return {"location_enabled": False}
         return {}
 
     def _get_nfc_status(self):
-        output = self._run_command(["dumpsys",  "nfc"])
-        return dict(nfc_enabled = output.startswith("mState=on"))
+        output = self._run_command(["dumpsys", "nfc"])
+        return dict(nfc_enabled=output.startswith("mState=on"))
+
     def _get_nfc_status_settings(self):
         """Get NFC state."""
         output = self._run_command(["settings", "get", "secure", "nfc_on"])
-        return {'nfc_enabled': output.strip() == "1"}
+        return {"nfc_enabled": output.strip() == "1"}
 
     def _get_flashlight_status(self):
         """Get flashlight state."""
         output = ""
         try:
             output += self._run_command(["dumpsys", "torch"])
-        except: pass
+        except:
+            pass
         try:
-            output += self._run_command(['dumpsys', 'notification', '--noredact']
-)
-        except: pass
+            output += self._run_command(["dumpsys", "notification", "--noredact"])
+        except:
+            pass
         for line in output.splitlines():
             if any(x in line.lower() for x in ["torch", "flashlight"]):
                 if any(x in line.lower() for x in ["enabled", "on", "true"]):
-                    return {'flashlight_enabled': True}
+                    return {"flashlight_enabled": True}
                 elif any(x in line.lower() for x in ["disabled", "off", "false"]):
-                    return {'flashlight_enabled': False}
+                    return {"flashlight_enabled": False}
         return {}
 
     def list(self, print_formatted: bool = False, show_last_used=False):
@@ -2393,7 +2395,7 @@ class AdbWrapper:
         self.initialize()
         self.remote = self
 
-    def terminate_app(self, app_id:str):
+    def terminate_app(self, app_id: str):
         self.execute_su_cmd(f"am force-stop {app_id}")
         self.execute_su_cmd(f"am kill {app_id}")
         self.execute_su_cmd(f"pm disable {app_id}")
@@ -2768,8 +2770,11 @@ for (UsageStats usageStats : stats.values()) {
         self.device = device_id
         self.initialize()
 
-    def _build_cmd(self, args: List[str], device_id=None) -> List[str]:
-        cmd = [self.adb_path]
+    def _build_cmd(self, args: List[str], device_id=None, use_shared_prefix=True) -> List[str]:
+        if use_shared_prefix:
+            cmd = [self.adb_path, *self.config.adb_cli_prefixs]
+        else:
+            cmd =[self.adb_path]
         if device_id == NO_DEVICE_ID:
             ...
         elif device_id:
@@ -2786,9 +2791,13 @@ for (UsageStats usageStats : stats.values()) {
         text=True,
         check=True,
         device_id=None,
+        use_shared_env=True, use_shared_prefix=True
     ) -> subprocess.CompletedProcess:
-        cmd = self._build_cmd(args, device_id)
-        result = subprocess.run(cmd, capture_output=capture, text=text, check=check)
+        cmd = self._build_cmd(args, device_id, use_shared_prefix=use_shared_prefix)
+        env = os.environ.copy()
+        if use_shared_env:
+            env = {**env, **self.config.adb_shared_env}
+        result = subprocess.run(cmd, capture_output=capture, text=text, check=check, env=env)
         return result
 
     def check_output(self, args: List[str], device_id=None, **kwargs) -> str:
@@ -3360,9 +3369,12 @@ class ScrcpyWrapper:
     def set_device(self, device_id: str):
         self.device = device_id
 
-    def _build_cmd(self, args: List[str], device_id=None, basic=False) -> List[str]:
+    def _build_cmd(self, args: List[str], device_id=None, basic=False, use_shared_prefix=True) -> List[str]:
         # TODO: make these configs into a config file, such as "scrcpy_base_args"
-        cmd = [self.scrcpy_path]
+        if use_shared_prefix:        
+            cmd = [self.scrcpy_path, *self.config.scrcpy_cli_prefixs]
+        else:
+            cmd = [self.scrcpy_path]
         if device_id == NO_DEVICE_ID:
             ...
         elif device_id:
@@ -3408,17 +3420,23 @@ class ScrcpyWrapper:
 
         return cmd
 
-    def execute(self, args: List[str], basic=False):
-        cmd = self._build_cmd(args, basic=basic)
-        subprocess.run(cmd, check=True)
+    def execute(self, args: List[str], basic=False, check=True, use_shared_env=True, use_shared_prefix=True):
+        cmd = self._build_cmd(args, basic=basic, use_shared_prefix=use_shared_prefix)
+        env = os.environ.copy()
+        if use_shared_env:
+            env = {**env, **self.config.scrcpy_shared_env}
+        subprocess.run(cmd, check=check, env=env)
 
     def execute_detached(self, args: List[str], basic=False):
         cmd = self._build_cmd(args, basic=basic)
         spawn_and_detach_process(cmd)
 
-    def check_output(self, args: List[str], basic=False) -> str:
-        cmd = self._build_cmd(args, basic=basic)  # ; print(cmd)
-        output = subprocess.check_output(cmd).decode("utf-8")
+    def check_output(self, args: List[str], basic=False, use_shared_env=True, use_shared_prefix=True) -> str:
+        cmd = self._build_cmd(args, basic=basic, use_shared_prefix=use_shared_prefix)  # ; print(cmd)
+        env = os.environ.copy()
+        if use_shared_env:
+            env =  {**env, **self.config.scrcpy_shared_env}
+        output = subprocess.check_output(cmd, env=env).decode("utf-8")
         return output
 
     def start_sidecar_app_launch_filelock_releaser(
@@ -3593,16 +3611,22 @@ class ScrcpyWrapper:
                     configured_window_options.append("--window-%s" % it)
 
         if new_display:
-            if not check_flag_presense_in_custom_args(flag = "--new-display", custom_args = scrcpy_args):
-                args.extend(['--new-display'])
+            if not check_flag_presense_in_custom_args(
+                flag="--new-display", custom_args=scrcpy_args
+            ):
+                args.extend(["--new-display"])
 
         if no_audio:
 
-            if not check_flag_presense_in_custom_args(flag = "--no-audio", custom_args = scrcpy_args):
+            if not check_flag_presense_in_custom_args(
+                flag="--no-audio", custom_args=scrcpy_args
+            ):
                 args.extend(["--no-audio"])
 
         if title:
-            if not check_flag_presense_in_custom_args(flag = "--window-title", custom_args = scrcpy_args):
+            if not check_flag_presense_in_custom_args(
+                flag="--window-title", custom_args=scrcpy_args
+            ):
                 args.extend(["--window-title", title])
 
         if scrcpy_args:
@@ -3816,7 +3840,9 @@ class ScrcpyWrapper:
 
             need_restart = not has_exception and (terminate_reason in restart_reasons)
 
-            need_app_stop = self.is_device_connected() and (terminate_reason in app_stop_reasons)
+            need_app_stop = self.is_device_connected() and (
+                terminate_reason in app_stop_reasons
+            )
 
             setattr(proc, "need_restart", need_restart)
             setattr(proc, "need_app_stop", need_app_stop)
@@ -3837,7 +3863,7 @@ class ScrcpyWrapper:
                 restart_params = launch_params.copy()
                 restart_params["env"] = env
                 self.launch_app(**restart_params)
-            
+
             elif need_app_stop:
                 self.swm.adb_wrapper.terminate_app(package_name)
 
@@ -3928,7 +3954,7 @@ class ScrcpyWrapper:
 
         proc_pid = proc.pid
         reconfirming_times = 3
-        reconfirming_interval = 0.2
+        reconfirming_interval = 0.7
 
         while True:
             time.sleep(0.2)
@@ -3936,9 +3962,9 @@ class ScrcpyWrapper:
                 display_id = getattr(proc, "display_id")
                 break
 
-        last_app_in_display = (
-            app_in_display
-        ) = True  # self.check_app_in_display(app_id, display_id)
+        last_app_in_display = app_in_display = (
+            True  # self.check_app_in_display(app_id, display_id)
+        )
         while True:
             last_app_in_display = app_in_display
             time.sleep(1)
@@ -4161,6 +4187,10 @@ class FzfWrapper:
             return ret
 
 
+# TODO: pop up a screen containing interactive commands like fuzzy search device, app ids, then attach output to the log
+# TODO: pop up a screen when listing running processes or oneshot commands
+# TODO: if editing file is required, use textual-terminal widget, or a custom editor implemention other than spawning new process is required
+# https://pypi.org/project/textual-terminal
 class ReplManager:
     def __init__(self, swm: SWM):
         self.swm = swm
@@ -4362,8 +4392,7 @@ exit 0
             print("No previous IME")
 
 
-class WirelessManager:
-    ...
+class WirelessManager: ...
 
 
 # for mounting file
@@ -4371,11 +4400,9 @@ class FileManager:
     def __init__(self, swm: SWM):
         self.swm = swm
 
-    def mount_from_device_to_pc(self, device_path: str, pc_path: str):
-        ...
+    def mount_from_device_to_pc(self, device_path: str, pc_path: str): ...
 
-    def mount_from_pc_to_device(self, pc_path: str, device_path: str):
-        ...
+    def mount_from_pc_to_device(self, pc_path: str, device_path: str): ...
 
 
 class JavaManager:
@@ -4613,6 +4640,10 @@ def create_default_config(cache_dir: str):
             "app_list_cache_update_interval": 60 * 60 * 24,  # 1 day
             # "session_autosave_interval": 60 * 60,  # 1 hour
             "app_list_cache_path": os.path.join(cache_dir, "app_list_cache.json"),
+            "scrcpy_cli_prefixs": [],  # TODO: named baseconfig and shared scrcpy/adb cli prefixs and envs 
+            "scrcpy_shared_env": {}, # ref: https://github.com/me2sy/MYScrcpy/issues/14#issuecomment-3094617940
+            "adb_cli_prefixs": [],
+            "adb_shared_env": {},
             "github_mirrors": [
                 "https://github.com",
                 "https://bgithub.xyz",
@@ -4623,9 +4654,7 @@ def create_default_config(cache_dir: str):
                 "device_offline",
                 "app_gone",
             ],
-            "app_stop_reasons":[
-                "unknown"
-            ],
+            "app_stop_reasons": ["unknown"],
             "use_shared_app_config": True,
             "binaries": {
                 "adb": {"version": "1.0.41"},
