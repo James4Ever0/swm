@@ -119,6 +119,9 @@ Environment variables:
 
 ## Demo
 
+### Multiple apps 
+![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-multi-apps.gif "Multiple apps")
+
 ### App fuzzy run
 ![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-app-run-fuzzy.gif "App fuzzy search")
 
