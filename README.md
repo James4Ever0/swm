@@ -1,3 +1,4 @@
+<!-- TODO: Add nocheck option to app run, propagate app window traversal to those checking instances, and retain checking policy once nocheck window is gone -->
 
 <div align="center">
 <img src="https://raw.githubusercontent.com/james4ever0/swm/main/logo/logo.png" alt="logo" width="200"/>
