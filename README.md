@@ -13,6 +13,39 @@
 </p>
 </div>
 
+## Demo
+
+### Multiple apps 
+![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-multi-apps.gif "Multiple apps")
+
+### App fuzzy run
+![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-app-run-fuzzy.gif "App fuzzy search")
+
+### App search and run
+![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-app-search-and-run.gif "App search and run")
+
+### Chrome demo
+![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-chrome-demo.gif "Chrome demo")
+
+### Device status
+![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-device-status.gif "Device status")
+
+### Java shell
+![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-java-shell.gif "Java shell")
+
+### List IME
+![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-list-ime.gif "List IME")
+
+### Search
+![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-search.gif "Search")
+
+### Termux demo
+![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-termux-demo.gif "Termux demo")
+
+### Termux shell
+![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-termux-shell.gif "Termux shell")
+
+
 ## Use cases
 
 - Improve ergonimics
@@ -117,38 +150,6 @@ Environment variables:
   SCRCPY        Path to SCRCPY binary (overrides SWM managed SCRCPY)
   FZF           Path to FZF binary (overrides SWM managed FZF)
 ```
-
-## Demo
-
-### Multiple apps 
-![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-multi-apps.gif "Multiple apps")
-
-### App fuzzy run
-![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-app-run-fuzzy.gif "App fuzzy search")
-
-### App search and run
-![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-app-search-and-run.gif "App search and run")
-
-### Chrome demo
-![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-chrome-demo.gif "Chrome demo")
-
-### Device status
-![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-device-status.gif "Device status")
-
-### Java shell
-![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-java-shell.gif "Java shell")
-
-### List IME
-![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-list-ime.gif "List IME")
-
-### Search
-![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-search.gif "Search")
-
-### Termux demo
-![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-termux-demo.gif "Termux demo")
-
-### Termux shell
-![Gif image](https://raw.githubusercontent.com/james4ever0/swm/main/gif/swm-termux-shell.gif "Termux shell")
 
 ## Related projects
 
