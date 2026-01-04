@@ -1,5 +1,10 @@
 <!-- TODO: Add nocheck option to app run, propagate app window traversal to those checking instances, and retain checking policy once nocheck window is gone -->
 
+
+<!-- TODO: Add exception app list, monitor and display non-initial top-level app names to log, add auto exception config generation after automatic termination or prompt user before close -->
+
+<!-- TODO: Investigate why qq exits during and after photo selection and submission ->
+
 <div align="center">
 <img src="https://raw.githubusercontent.com/james4ever0/swm/main/logo/logo.png" alt="logo" width="200"/>
 
