@@ -5,6 +5,10 @@
 
 <!-- TODO: Investigate why qq exits during and after photo selection and submission ->
 
+<!-- TODO: reattach termux shell when device reconnects -->
+
+<!-- TODO: check compatibilities with more devices -->
+
 <div align="center">
 <img src="https://raw.githubusercontent.com/james4ever0/swm/main/logo/logo.png" alt="logo" width="200"/>
 
